@@ -1,0 +1,73 @@
+WW.EXE mouse click / order findings (2026-09-27, static only). All names also in kb.h ("mouse clicks / orders").
+
+1. HANDLERS
+InGameLButtonPress 0x41EB00 (WM_LBUTTONDOWN, eax=lParam): modal -> dialog 0x48DAFC. anchor 0x4B33CC/CE = -1, zero 0x4C2DB0[16].
+  Returns if g_altPanel 0x4B2644 or panelMode 0x4B60EE > 1. "Show Active Units"(0x213-0x239,0xED-0x113)/"Inn"(0x24C-0x272) open the
+  alt panel. Otherwise anchor = (x,y) (anywhere, map or panel). So no drag anchor while the popup is open or in target mode.
+InGameLButtonDown 0x41DB1C (really WM_LBUTTONUP; eax=wParam, edx=lParam; handler clears g_lButtonHeld 0x4B33C4 first):
+  tile = (x/24+smallX, y/24+smallY). modal -> 0x48DC78. altPanel -> close it. panelMode==2 (popup open) -> PopupClick 0x41D0B8(1).
+  DRAG: if anchorX>=0 && !altPanel && (|x-ax|>16 || |y-ay|>16) -> DragRectToTiles(&xy), return (even in target mode).
+  anchor=-1. Minimap (0x212-0x272,0x88-0xE8): tile=((x-0x212)*2,(y-0x88)*2), continue as map click. x>0x205 -> PanelClick(xy,0).
+  panelMode>=5 (TARGET MODE): cmd 0x55 (build): footprint check 0x41CF94/0x425568/0x423E58, SendOrder(dir,cur,0x55,0,tileIdx) or
+    cancel. Else SendOrder 0x57 for units with popup flag; mode 6 clamps tile by building footprint; SendOrder 0x91 per unit with
+    ext+0x61; IssueOrderAt 0x428004(tileY,tileX,g_pendingCmd,lParam); ack voice; panelMode=1; ClosePopupLevel; restore cursor if
+    0x4B2748; g_pendingCmd=0.
+  panelMode<5: id=FindThingAtScreenPos(x,y,0); id=0 if Alt or waypoint mode 0x5440E0. If GetConcealment(id,1)==4 && enemy -> id treated
+    as ground. Category switch:
+    unit(2): alive -> ClickSelectThing 0x41CCDC(id, bl=!shift): own -> select (shift toggles); enemy -> if nothing selected SelectThing
+      (refused for enemies) else returns 0 = ORDER; status text.
+    resource/other(3): nothing selected or ext words set -> ClickSelectThing, else ORDER unless a single cat-3 thing is selected.
+    building(1): nothing selected -> select + name text; single own building selected -> select the new one; units selected -> ORDER.
+    8: ClickSelectThing. Empty ground -> ORDER.
+  ORDER only if curSelected 0x4B274C is 0x801 or a single own cat 2/3/8 thing. Alt/waypoint mode collects up to 0x5440E1 points and
+    issues 0x41D7C8 when complete. Otherwise ack voice (0x4111F8), SendOrder 0x91 per unit with ext+0x61, IssueDefaultOrder 0x4287EC(
+    eax=tileY, edx=tileX, bl=playerClan, ecx=lParam).
+  Left click on empty ground with nothing (or a building) selected: nothing.
+InGameRButton 0x41EC88 (WM_RBUTTONUP; handler clears g_rButtonHeld 0x4B33C8): modal -> return. Clears waypoint mode 0x5440E0,
+  0x4B2658 (portrait hold), restores cursor if 0x4B2748==1 (0x413FF8,0x41403C). Minimap -> centre view there. x>0x205 -> PanelClick(xy,1).
+  NO panelMode test. id=FindThingAtScreenPos(x,y,0):
+    own unit(2, owner clan/0xB/0xC, state!=0x55) or own cat 3/8: if !shift ClearPopupFlags 0x41C6C0; SendOrder(dir,id,0x56,clan,shift)
+      -> on execution SelectThing(id, !shift, secondary=1, ...), OpenCommandPopup 0x44E7CC, panelMode=2 (the popup).
+    enemy unit: return (nothing). anything else (ground, building of anyone, enemy 3/8, resource): DESELECT ALL = for each selected:
+      own -> SendOrder(dir,id,0x58,clan,0), else UnlinkSelected + clear flag bit0, curSelected=firstSelected=0; ResetPanel 0x44C994;
+      panelMode=1; ClosePopupLevel. This also silently cancels a pending command (g_pendingCmd left stale, harmless).
+
+2. ORDERS
+SendOrder 0x48A684(eax=*(int*)0x4BA4B4, edx=unit, ebx=cmd, ecx=target thing id, push tileIdx=y*192+x), ret 4. eax==0 (network game)
+  queues into the lockstep buffer via 0x489144; nonzero executes immediately. Every click path uses this, one call per selected unit.
+IssueDefaultOrder / IssueOrderAt: see kb.h for cmd selection (7 land move, 8 water, 1 attack/interact, 6 gather, 0x6B Ctrl formation,
+  0 explicit move). Per-unit tile = target + formation offset (relative to nearest unit for 0x6B), clamped 0..0xBF. Units in states
+  0x13..0x30, 0x31, 0x5F, 0x0B..0x10, 0x46..0x50, 0x55 are skipped. Order: 0x79 chain, per-unit cmd (+0x76), then 0x75 to all.
+
+3. PENDING COMMAND
+g_panelMode 0x4B60EE (1 normal, 2 popup, 5 target, 6 placement, >=7 other), g_pendingCmd 0x4B60EC, g_pendingCursor 0x4B60F0, set by
+  PopupCommandAction 0x44ED10 (button 0 Move: cmd 0/mode 5/cursor 2; button 1 Attack: 1/5/1; 22: 0x55/5/3). PopupClick sends 0x57 and
+  ResetPanel when entering mode>2 and hides the cursor for modes 6/>=7 (0x4B2748=1). UpdateCursorShape 0x41B868 shows the reticle
+  0x80010114 whenever panelMode>2 (x<0x205), so resetting panelMode restores the cursor. ESC does NOT cancel (KeyScroll swallows
+  it when panelMode>1). Game's own cancel (0x41DD64): g_pendingCmd=0; panelMode=1; ClosePopupLevel 0x44FED4.
+
+4. RIGHT-CLICK DESELECT: see InGameRButton "anything else" branch; it fires on ground, buildings, resources and enemy cat 3/8.
+
+5. MOD PLAN (WndProc hook; x,y = *game::mouseX/Y; call g_original with the substituted message, then fix held flags)
+gate = InMission() && *(short*)0x4B26CA==0 && *(int*)0x4B2644==0 && (*(signed char*)0x4C2C24>0 || *(BYTE*)0x4C2D57) && InMapView(x,y)
+mode = *(short*)0x4B60EE
+CancelPending(): ClearPopupFlags 0x41C6C0; *(short*)0x4B60EC=0; *(short*)0x4B60EE=1; ResetPanel 0x44C994; ClosePopupLevel 0x44FED4;
+  if (*(int*)0x4B2748==1) { *(int*)0x4B2748=0; call 0x413FF8; call 0x41403C; } *(BYTE*)0x5440E0=0;
+Commandable(): cur=*(u16*)0x4B274C; cur==0x801 || (cur && cur<0x800 && cat(cur) in {2,3,8} && owner(cur)==clan)
+WM_RBUTTONUP (gate):
+  if mode>=5 { CancelPending(); *(int*)0x4B33C8=0; return 0; }                            // (e)
+  id=FindThingAtScreenPos(x,y,0)
+  if id && owner==clan && cat in {2,3,8} -> original WM_RBUTTONUP (popup, (d))
+  if mode==2 CancelPending()                                                               // close popup, then command
+  if !Commandable() || *(int*)0x4B33C4 (left held) -> swallow (or original)
+  anchor 0x4B33CC/CE = -1; r=g_original(hwnd, WM_LBUTTONUP, wParam, lParam); *(int*)0x4B33C8=0; return r   // (a) exact left-click order path
+WM_LBUTTONUP (gate, mode<5, mode!=2, *(BYTE*)0x5440E0==0, !*game::altDown):
+  ax=*(short*)0x4B33CC; drag = ax>=0 && (abs(x-ax)>16 || abs(y-ay)>16) -> original (box select, (c))
+  id=FindThingAtScreenPos(x,y,0); if id && GetConcealment(&things[id],1)==4 && owner!=clan -> id=0
+  if id -> original (select / shift toggle, (c))
+  empty: anchor=-1; *(int*)0x4B33C4=0; if shift||ctrl return 0; else r=g_original(hwnd, WM_RBUTTONUP, wParam, lParam); *(int*)0x4B33C8=0;
+    return r   // native deselect-all incl. network 0x58/popup flags, ResetPanel, panelMode=1  ((b))
+Optional pure-RTS left click on enemy/resource/building while units selected (original orders them): local DeselectAll (as the
+  existing SelectSameType) after ClearPopupFlags, curSelected=0, then pass the original (it will select or do nothing).
+Everything runs on the game thread inside the message loop, same as the original handlers; all orders go through SendOrder with
+  eax=*(int*)0x4BA4B4, so it is lockstep-safe. Selection itself is local UI state in the original too.

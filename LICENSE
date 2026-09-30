@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 Jean-Laurent Rouzies
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+What this licence covers: the source code, the patch sets (`src/patchsets/`),
+the installer, the shaders, the tools and the documentation written for this
+project. The cnc-ddraw patches in `third_party/cnc-ddraw/` are offered under
+cnc-ddraw's own MIT licence (see that folder).
+
+What it does NOT cover: War Wind itself. The game's art, music, sound, video
+and text are the property of their rights holders (DreamForge Intertainment /
+SSI and successors) and cannot be licensed here. Everything derived from them,
+that is `assets/backdrop.png`, the AI-upscaled cutscenes distributed with the
+releases, the screenshots of the original game in `docs/images/` and the
+banner, stays subject to those rights. They are provided only for use with a
+legitimately owned copy of the game, and no licence to them is granted or
+implied by this file. Third-party components keep their own licences (see
+THIRD-PARTY-NOTICES.txt in the releases).

@@ -1,0 +1,54 @@
+# Build outputs
+build/
+dist/
+*.obj
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Third-party tool downloads (ffmpeg, Real-ESRGAN, RIFE)
+tools/bin/
+
+# Original game files and anything derived from them -- never commit these
+*.AVI
+*.avi
+*.mp4
+*.mid
+*.MID
+# the game's RES.000..RES.00x archives (not tools/res.py: git matches case-insensitively here)
+RES.0*
+WW.EXE
+*.bmp
+*.BMP
+*.png
+!installer/warwind-remaster.png
+# the AI-upscaled menu backdrop, published with the user's approval like the cutscenes
+!assets/backdrop.png
+# the README's screenshots, published at the user's request
+!docs/images/*.png
+*.LBM
+*.lbm
+captures/
+video_work/
+ghidra/
+backups/
+_original_backup/
+_ArtificialRemaster_backup/
+index.db
+lin.pkl
+hires_ingame.txt
+hires_screen.txt
+
+# Logs and runtime files
+*.log
+*.part
+WarWindHD.cmd
+sandbox.STOP

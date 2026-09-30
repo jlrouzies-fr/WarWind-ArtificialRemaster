@@ -1,0 +1,2 @@
+# Keep patches byte-exact (LF) so git apply works on any checkout
+*.patch -text

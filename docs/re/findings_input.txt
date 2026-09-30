@@ -1,0 +1,44 @@
+# WW.EXE input / selection findings (2026-09-27, static only)
+
+All facts below are also appended to kb.h (section headers dated 2026-09-27). Watcom register convention: eax, edx, ebx, ecx, then stack pushed right-to-left; callee saves registers.
+
+## Message routing (needed by all three features)
+
+- WndProc = 0x414EEC (lpfnWndProc in WNDCLASSA built at 0x415404; class style 8 = CS_DBLCLKS, so Windows already turns the second click into WM_LBUTTONDBLCLK 0x203).
+- Current screen handler pointer = 0x4B25A4 (`call dword ptr [0x4B25A4]`, eax=msg, edx=wParam, ebx=lParam). SetScreenHandler 0x414048 sends 0x1403 to the old one, stores the new pointer, sends 0x1402. In-game test: *(uint32_t*)0x4B25A4 == 0x41FD58.
+- Main loop (0x41577A) sends 0x1401 = frame tick to the handler every frame; the in-game handler maps it to InGameTick 0x41BB84 (InGameFrame + Flip).
+- WndProc forwards to the handler: key messages 0x100/0x101/0x104/0x105; button messages 0x201/0x202/0x204/0x205/0x207/0x208 (only when g_cursorShown 0x4C2C24 > 0); WM_PAINT, WM_SETCURSOR, MM_MCINOTIFY, 0x1500, 0x1600.
+- Dropped before the handler (DefWindowProc): WM_MOUSEWHEEL 0x20A, all DBLCLK 0x203/0x206/0x209, WM_MOUSEMOVE 0x200 (0x200 only updates g_mouseX/Y). The in-game handler returns 1 for middle-button 0x207/0x208 without doing anything. The mod must hook/subclass the WndProc (or hook 0x414EEC) to see wheel, double-click and middle-drag.
+- In-game handler (0x41FD58) dispatch: 0x100/0x104 -> KeyScroll(vk); 0x201 -> InGameLButtonPress 0x41EB00(lParam) (sets drag anchor 0x4B33CC/CE = -1); 0x202 (button UP) -> InGameLButtonDown 0x41DB1C(wParam, lParam) - the kb.h name is misleading, it is the click/release handler; 0x205 -> InGameRButton. Preconditions inside: g_modalDialog 0x4B2648 == 0, g_gameEnding 0x4B26CA == 0.
+
+## Feature 1: double-click selects same type on screen
+
+Click -> Thing: InGameLButtonDown computes tile = (x/24 + smallStartX, y/24 + smallStartY) only for orders. Hit-testing uses FindThingAtScreenPos 0x422598(eax=x, edx=y, ebx=clanFilter(0)) which walks the last frame's sprite rect list (g_rectList 0x4C2DE8[g_rectListCur 0x4B33AC], count 0x4B33B0[cur], 10-byte records {u16 id, i16 y1, i16 x1, i16 y2, i16 x2}) top-most first and returns the id (0 = none).
+
+Single select: category 2/3/8 things go through ClickSelectThing 0x41CCDC -> SelectThing(id, 1, 0, 1, clan, 1); buildings (category 1) call SelectThing(id,1,0,1,clan,1) directly. exclusive=1 makes SelectThing call DeselectAllOfClan 0x41C590(eax=g_playerClan) first and sets g_curSelected 0x4B274C = id.
+
+SelectThing 0x41C730 exact signature: eax=id, edx=exclusive, ebx=secondaryFlag (0), ecx=1 (0 skips list linking), stack: push announce(0/1) then push clan (ret 8). It silently refuses if the thing's big tile is not visible to clan (TileVisibleToClan 0x42AA9C), if owner is not clan/0xB/0xC, or category not in {2,3,8}. Linking (LinkSelected 0x41C1BC) is a priority-sorted insert with a cap of 16 units (counts categories 2/3; when full and the new one is a unit it evicts the lowest 0x4B3374[unitClass] priority). Groups hold 18 (RecallGroup loop bound 0x12), so the effective selection cap is 16.
+
+Multi-select template: SelectAllOnScreen 0x47AEBC = deselect loop (while(id=g_firstSelected) DeselectThing(eax=id)), zero anchor 0x4B33CC/CE, then DragRectToTiles 0x41BE20(eax=&(short[2]){0x206,0x1DF}). DragRectToTiles: tile box = both corners /24 + smallStart; if !g_shiftDown deselect all; for each tile reads g_tileThings 0x4F1F28 (u16 per tile, row stride 0x180, head id = value & 0x7FF) and follows Thing+0x0E nextOnTile; skips Thing+0x1B==1 && Thing+0x26!=player; selects when category in {2,3} && !(flags+0x10 & 1) && owner+0x18 == g_playerClan via SelectThing(id, 0, 0, 1, clan, 0). It applies no cap itself; the 16 cap comes from LinkSelected. The visible tile window is smallStartX..+21, smallStartY..+19.
+
+Thing fields (stride 0x7C at 0x5044A0): +0 type (unit/building type index; unit name text 0x80020071+type, building 0x80020098+type), +1 category, +2 ext index, +4/+6 tileX/tileY (small tiles), +0x0E nextOnTile, +0x10 flags (bit0 selected, bit5 0x20 removed/dead), +0x12 flags2 (0x20 inside carrier), +0x18 owner, +0x43/+0x45 prev/next selected. Unit liveness: flags & 0x20 == 0 and ext state *(u8*)(0x4EA7B5 + ext*0x78) not 2/3.
+
+Recipe (on WM_LBUTTONDBLCLK inside the map, x<0x206, y<0x1C5):
+```
+T = FindThingAtScreenPos(x, y, 0);  if (!T) return;           // or T = *(u16*)0x4B274C if the first click already selected it
+t = THING(T); if (t->category != 2 && t->category != 3) return; if (t->owner != g_playerClan) return;
+while (id = *(u16*)0x4B2640) DeselectThing(eax=id);           // same as SelectAllOnScreen
+for ty in smallY..smallY+19, tx in smallX..smallX+21:
+  for (id = tile[ty*192+tx] & 0x7FF; id; id = THING(id)->nextOnTile)
+    u = THING(id); if (u->category==t->category && u->type==t->type && u->owner==g_playerClan && !(u->flags&1) && !(u->flags&0x20))
+      SelectThing(eax=id, edx=0, ebx=0, ecx=1, stack: clan=g_playerClan, announce=0);   // cap 16 enforced inside
+```
+Alternative "visible" set: iterate the rect list instead of tiles (exactly what was drawn). Call all of this from the WndProc hook on the game thread, only when *(u32*)0x4B25A4 == 0x41FD58 && *(int*)0x4B2648 == 0.
+
+## Feature 2: wheel / middle-drag scrolling
+
+KeyScroll 0x41F00C(eax=vk) -> returns eax=1 if handled. Guard: g_modalDialog 0x4B2648 == 0. Step = g_optScrollSpeed 0x4B76B7 + 1 small tiles (registry "Screen Scroll Speed"). VK_LEFT 0x25: smallStartX -= step, unsigned underflow (>0xBF) -> 0; VK_UP 0x26 same on smallStartY; VK_RIGHT 0x27: += step, clamp 0xAA; VK_DOWN 0x28: += step, clamp 0xAD. Then bigStart = small/2, if g_panelMode 0x4B60EE == 2 set g_panelDirtyBits 0x4B264C = 0xFF, then RedrawMapSurface 0x41913C(eax = g_optDisplayHack 0x4B6E94) (0 = incremental scroll via ScrollMapSurface*, non-zero = full). Any other vk falls into chat/hotkey dispatch, so only pass 0x25..0x28. It is invoked straight from the WM_KEYDOWN path (not from the frame tick) so the mod may call it from its WndProc hook at any time in-game. For pixel-precise middle-drag, bypass KeyScroll: clamp and write 0x5440E5/0x5440E4, write halves to 0x5440E3/0x5440E2, then RedrawMapSurface(eax=*(int*)0x4B6E94); the next 0x1401 tick presents it. CenterViewOnThing 0x42196C(eax=id) (kb.h previously called it RefreshPanelForThing) is the game's own "jump view" primitive and uses the same sequence with clamps 0xAA/0xAC.
+
+## Feature 3: mouse position pipeline
+
+WM_MOUSEMOVE (0x4151A0): raw lParam stored as dword at 0x4C2C25 (x word 0x4C2C25, y word 0x4C2C27). If g_windowed 0x4C2BF4: x = x*g_screenWidth/(g_clientRect.right-left), y = y*g_screenHeight/(bottom-top) (g_clientRect 0x4C2110 refreshed on WM_MOVE/WM_SIZE via GetClientRect+ClientToScreen). For button messages in windowed mode WndProc replaces lParam with g_mouseX | g_mouseY<<16 before calling the handler, so handlers always see 640x480 game coordinates; GetMousePos 0x413EA0(eax=short*) returns the same pair. A middle-drag implementation should read 0x4C2C25/27 (already scaled) rather than the raw lParam, convert pixels to tiles with /24, and restrict itself to x<0x206 (map view). Middle-button messages already reach the handler (which ignores them); WM_MOUSEWHEEL does not, so hook WndProc.

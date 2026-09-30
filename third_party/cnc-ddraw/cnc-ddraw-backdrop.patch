@@ -1,0 +1,263 @@
+diff --git a/inc/config.h b/inc/config.h
+index e15bece..3e89641 100644
+--- a/inc/config.h
++++ b/inc/config.h
+@@ -34,6 +34,7 @@ typedef struct CNCDDRAWCONFIG
+     BOOL vsync;
+     BOOL adjmouse;
+     char shader[MAX_PATH];
++    char backdrop[MAX_PATH];
+     char renderer[256];
+     BOOL devmode;
+     BOOL border;
+diff --git a/inc/render_d3d9.h b/inc/render_d3d9.h
+index 2de021c..88c5812 100644
+--- a/inc/render_d3d9.h
++++ b/inc/render_d3d9.h
+@@ -21,6 +21,7 @@ typedef struct D3D9RENDERER
+     IDirect3DTexture9* palette_tex[D3D9_TEXTURE_COUNT];
+     IDirect3DPixelShader9* pixel_shader;
+     IDirect3DPixelShader9* pixel_shader_upscale;
++    IDirect3DSurface9* backdrop;
+     float scale_w;
+     float scale_h;
+     int tex_width;
+diff --git a/inc/utils.h b/inc/utils.h
+index 3833ede..aef3a4e 100644
+--- a/inc/utils.h
++++ b/inc/utils.h
+@@ -27,4 +27,6 @@ BOOL CALLBACK util_enum_thread_wnd_proc(HWND hwnd, LPARAM lParam);
+ BOOL CALLBACK util_enum_child_proc(HWND hwnd, LPARAM lParam);
+ BOOL util_detect_low_res_screen();
+ 
++const unsigned int* util_get_backdrop(unsigned int* width, unsigned int* height);
++
+ #endif
+diff --git a/src/config.c b/src/config.c
+index 18cfacd..b0a4893 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -44,6 +44,7 @@ void cfg_load()
+     GET_BOOL(g_config.vsync, "vsync", FALSE);
+     GET_BOOL(g_config.adjmouse, "adjmouse", TRUE);
+     GET_STRING("shader", "Shaders\\interpolation\\catmull-rom-bilinear.glsl", g_config.shader, sizeof(g_config.shader));
++    GET_STRING("backdrop", "", g_config.backdrop, sizeof(g_config.backdrop));
+     GET_INT(g_config.window_rect.left, "posX", -32000);
+     GET_INT(g_config.window_rect.top, "posY", -32000);
+     GET_STRING("renderer", "auto", g_config.renderer, sizeof(g_config.renderer));
+diff --git a/src/render_d3d9.c b/src/render_d3d9.c
+index dde4b2c..c6c4959 100644
+--- a/src/render_d3d9.c
++++ b/src/render_d3d9.c
+@@ -28,6 +28,8 @@ static BOOL d3d9_check_succeeded(HRESULT hr, const char* stmt);
+ static BOOL d3d9_create_resources();
+ static BOOL d3d9_set_states();
+ static BOOL d3d9_update_vertices(BOOL upscale_hack, BOOL stretch);
++static void d3d9_create_backdrop();
++static void d3d9_clear_borders();
+ 
+ static D3D9RENDERER g_d3d9;
+ 
+@@ -216,8 +218,17 @@ BOOL d3d9_reset(BOOL windowed)
+     g_d3d9.params.FullScreen_RefreshRateInHz = g_d3d9.params.Windowed ? 0 : g_config.refresh_rate;
+     g_d3d9.params.BackBufferFormat = g_ddraw.mode.dmBitsPerPel == 16 ? D3DFMT_R5G6B5 : D3DFMT_X8R8G8B8;
+ 
++    /* D3DPOOL_DEFAULT resources must be gone before Reset */
++    if (g_d3d9.backdrop)
++    {
++        IDirect3DSurface9_Release(g_d3d9.backdrop);
++        g_d3d9.backdrop = NULL;
++    }
++
+     if (g_d3d9.device && SUCCEEDEDX(IDirect3DDevice9_Reset(g_d3d9.device, &g_d3d9.params)))
+     {
++        d3d9_create_backdrop();
++
+         BOOL result = d3d9_set_states();
+ 
+         if (result)
+@@ -268,6 +279,12 @@ BOOL d3d9_release_resources()
+         g_d3d9.vertex_buf = NULL;
+     }
+ 
++    if (g_d3d9.backdrop)
++    {
++        IDirect3DSurface9_Release(g_d3d9.backdrop);
++        g_d3d9.backdrop = NULL;
++    }
++
+     return TRUE;
+ }
+ 
+@@ -324,6 +341,8 @@ static BOOL d3d9_create_resources()
+ 
+     err = err || !d3d9_update_vertices(InterlockedExchangeAdd(&g_ddraw.upscale_hack_active, 0), TRUE);
+ 
++    d3d9_create_backdrop();
++
+     for (int i = 0; i < D3D9_TEXTURE_COUNT; i++)
+     {
+         if (g_ddraw.bpp == 16 && g_config.rgb555)
+@@ -573,6 +592,47 @@ static BOOL d3d9_update_vertices(BOOL upscale_hack, BOOL stretch)
+     return FALSE;
+ }
+ 
++static void d3d9_create_backdrop()
++{
++    unsigned int width, height;
++    const unsigned int* pixels = util_get_backdrop(&width, &height);
++
++    if (!pixels)
++        return;
++
++    if (FAILEDX(IDirect3DDevice9_CreateOffscreenPlainSurface(
++        g_d3d9.device, width, height, D3DFMT_X8R8G8B8, D3DPOOL_DEFAULT, &g_d3d9.backdrop, NULL)))
++    {
++        g_d3d9.backdrop = NULL;
++        return;
++    }
++
++    D3DLOCKED_RECT lock_rc;
++
++    if (FAILEDX(IDirect3DSurface9_LockRect(g_d3d9.backdrop, &lock_rc, NULL, 0)))
++        return;
++
++    for (unsigned int y = 0; y < height; y++)
++        memcpy((char*)lock_rc.pBits + (size_t)y * lock_rc.Pitch, pixels + (size_t)y * width, width * 4);
++
++    IDirect3DSurface9_UnlockRect(g_d3d9.backdrop);
++}
++
++static void d3d9_clear_borders()
++{
++    IDirect3DSurface9* back_buffer = NULL;
++
++    if (g_d3d9.backdrop &&
++        SUCCEEDEDX(IDirect3DDevice9_GetBackBuffer(g_d3d9.device, 0, 0, D3DBACKBUFFER_TYPE_MONO, &back_buffer)))
++    {
++        IDirect3DDevice9_StretchRect(g_d3d9.device, g_d3d9.backdrop, NULL, back_buffer, NULL, D3DTEXF_LINEAR);
++        IDirect3DSurface9_Release(back_buffer);
++        return;
++    }
++
++    IDirect3DDevice9_Clear(g_d3d9.device, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
++}
++
+ DWORD WINAPI d3d9_render_main(void)
+ {
+     Sleep(250);
+@@ -696,7 +756,7 @@ DWORD WINAPI d3d9_render_main(void)
+ 
+         if (g_ddraw.render.viewport.x != 0 || g_ddraw.render.viewport.y != 0)
+         {
+-            IDirect3DDevice9_Clear(g_d3d9.device, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
++            d3d9_clear_borders();
+         }
+ 
+         IDirect3DDevice9_BeginScene(g_d3d9.device);
+diff --git a/src/render_gdi.c b/src/render_gdi.c
+index c7292ed..972853c 100644
+--- a/src/render_gdi.c
++++ b/src/render_gdi.c
+@@ -11,6 +11,33 @@
+ #include "config.h"
+ 
+ 
++static void gdi_clear_window()
++{
++    unsigned int width, height;
++    const unsigned int* pixels = util_get_backdrop(&width, &height);
++
++    if (pixels && !g_ddraw.child_window_exists)
++    {
++        BITMAPINFO bmi = { 0 };
++        bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
++        bmi.bmiHeader.biWidth = width;
++        bmi.bmiHeader.biHeight = -(LONG)height;
++        bmi.bmiHeader.biPlanes = 1;
++        bmi.bmiHeader.biBitCount = 32;
++        bmi.bmiHeader.biCompression = BI_RGB;
++
++        int mode = SetStretchBltMode(g_ddraw.render.hdc, HALFTONE);
++        real_StretchDIBits(
++            g_ddraw.render.hdc, 0, 0, g_ddraw.render.width, g_ddraw.render.height,
++            0, 0, width, height, pixels, &bmi, DIB_RGB_COLORS, SRCCOPY);
++        SetStretchBltMode(g_ddraw.render.hdc, mode);
++        return;
++    }
++
++    RECT rc = { 0, 0, g_ddraw.render.width, g_ddraw.render.height };
++    FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
++}
++
+ DWORD WINAPI gdi_render_main(void)
+ {
+     static DWORD warning_end_tick = 0;
+@@ -95,8 +122,7 @@ DWORD WINAPI gdi_render_main(void)
+ 
+             if (InterlockedExchange(&g_ddraw.render.clear_screen, FALSE) || g_ddraw.child_window_exists)
+             {
+-                RECT rc = { 0, 0, g_ddraw.render.width, g_ddraw.render.height };
+-                FillRect(g_ddraw.render.hdc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
++                gdi_clear_window();
+             }
+ 
+             int lines_copied = 0;
+diff --git a/src/utils.c b/src/utils.c
+index fafd4ed..c62a5c9 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -12,6 +12,7 @@
+ #include "render_d3d9.h"
+ #include "utils.h"
+ #include "config.h"
++#include "lodepng.h"
+ #include "versionhelpers.h"
+ #include "delay_imports.h"
+ 
+@@ -1124,3 +1125,45 @@ BOOL util_detect_low_res_screen()
+ 
+     return FALSE;
+ }
++
++/* Image shown around a boxed game picture instead of black (backdrop=<png>, relative to the game
++   folder). Decoded once; returns top-down 0x00RRGGBB pixels, or NULL when none is configured. */
++const unsigned int* util_get_backdrop(unsigned int* width, unsigned int* height)
++{
++    static unsigned int* pixels;
++    static unsigned int w, h;
++    static BOOL tried;
++
++    if (!tried && g_config.backdrop[0])
++    {
++        tried = TRUE;
++
++        char path[MAX_PATH];
++
++        if (strchr(g_config.backdrop, ':') || g_config.backdrop[0] == '\\')
++            _snprintf(path, sizeof(path) - 1, "%s", g_config.backdrop);
++        else
++            _snprintf(path, sizeof(path) - 1, "%s%s", g_config.game_path, g_config.backdrop);
++
++        path[sizeof(path) - 1] = 0;
++
++        unsigned char* rgba = NULL;
++
++        if (lodepng_decode32_file(&rgba, &w, &h, path) == 0)
++        {
++            pixels = (unsigned int*)rgba;
++
++            for (size_t i = 0; i < (size_t)w * h; i++, rgba += 4)
++                pixels[i] = (rgba[0] << 16) | (rgba[1] << 8) | rgba[2];
++        }
++        else
++        {
++            TRACE("backdrop: cannot load %s\n", path);
++            free(rgba);
++        }
++    }
++
++    *width = w;
++    *height = h;
++    return pixels;
++}

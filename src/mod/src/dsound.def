@@ -1,0 +1,14 @@
+LIBRARY dsound
+EXPORTS
+    DirectSoundCaptureCreate=stub_0 @6
+    DirectSoundCaptureCreate8=stub_1 @12
+    DirectSoundCaptureEnumerateA=stub_2 @7
+    DirectSoundCaptureEnumerateW=stub_3 @8
+    DirectSoundCreate=stub_4 @1
+    DirectSoundCreate8=stub_5 @11
+    DirectSoundEnumerateA=stub_6 @2
+    DirectSoundEnumerateW=stub_7 @3
+    DirectSoundFullDuplexCreate=stub_8 @10
+    DllCanUnloadNow=stub_9 @4
+    DllGetClassObject=stub_10 @5
+    GetDeviceID=stub_11 @9

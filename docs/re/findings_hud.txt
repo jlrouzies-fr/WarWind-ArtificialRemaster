@@ -1,0 +1,113 @@
+WW.EXE HUD findings: portrait / health / control groups / name plate (2026-09-27, static only, original exe)
+Notation: T(id) = (Thing*)(0x5044A0 + id*0x7C); U(id) = unit ext record 0x4EA7A0 + T(id)->ext*0x78 (category 2 AND 8);
+TT(type) = g_unitTypeTable 0x4B3C38 + type*0x20; RES1(n) = resource 0x80010000+n; TXT(n) = RES.000 string n = res 0x80000000+n.
+
+1. PORTRAIT (DrawCommandPanel 0x417280, current selection cur = *(u16*)0x4B274C)
+ 0x42B3C0 is NOT a rank: it is GetUnitRace(id) -> race 0..3 (same order as g_playerRace: 0 Tha'Roon, 1 Obblinox, 2 Eaggra,
+   3 Shama'Li) or -1. Pure function of T(id)->type:
+     type < 0x0C -> -1 (creatures/neutral: Bonca, Dinge Vermin ...)
+     0x0C..0x33  -> (type-0x0C)/10            (10 unit types per race: TT(type)[0] = slot 1..10)
+     0x34..0x36 -> 0, 0x37..0x39 -> 2, 0x3A..0x3C -> 3, 0x3D..0x3F -> 1   (heroes/specials)
+     0x40 -> 1, 0x41 -> 2, 0x42 -> 0, 0x43..0x46 -> type-0x43, else -1
+ Dispatch on T(cur)->category (jump table 0x417260): 2 -> 0x417633, 1 -> 0x417C1C, 3 -> 0x417E2D, 8 -> 0x418027.
+ Category 2 (unit):
+   race = GetUnitRace(id)
+   if race < 0 (0x4179A5):           res = 0x800100DD, frame = *(u8*)(0x4B33D1 + type)      (creature sheet, 22 frames)
+   else if own or *(u8*)0x4B2675:
+     type < 0x34 (0x41773F):         res = 0x800100D3 + race, frame = TT(type)[0] - 1  (0..9)   (per-race sheet RES.001 #D3..D6)
+     type >= 0x34 (0x416EE4):        res = 0x800100D3 + race, frame by table 0x416E98[type-0x34]:
+                                     0x34,0x37,0x3A,0x3D,0x42 -> 0xB; 0x35,0x38,0x3B,0x3E -> 0xC; 0x36,0x39,0x3C,0x3F -> 0xA;
+                                     0x43..0x46 -> 0xD; 0x40 -> res 0x800100DF frame 4; 0x41 -> res 0x800100DF frame 5.
+   else (enemy, 0x4177B0):           res = 0x800100E0, frame = race   (generic race silhouette, no detail)
+   All drawn DrawImage(res, frame, x=0x213, y=0x12E, 0). Frames 0..13 of D3..D6/DD/DE/DF/E0 are 55x71 with stored offset (0,0),
+   so the portrait occupies (531,302)-(585,372) at 640x480; to draw it at (X,Y) call DrawImage(res, frame, X, Y, 0).
+   (Frames 14..21 of D3..D6 are small 14/34 px pieces with offsets ~(9..17,10) - header use, not portraits.)
+ Other categories (same x/y): building: res 0x800100CF + 0x44A6D0(id) (building race), frame *(u8*)(0x4B33DD + *(u8*)(0x4B5E4C+type*0x18));
+   type 0x18 -> 0x800100DF/1, 0x19 -> DF/2, 0x1A/0x1B -> DF/0.  cat 3: type 4 -> DF/3, type 5 -> DD/*(u8*)0x4B33D7, else 0x800100DB/type.
+   cat 8: 0x800100DC / (1-type).
+ Several selected (cur==0x801, 0x4172D4): DrawImage(0x800100DE, g_playerRace, 0x213, 0x12E) (race "group" picture, 4 frames 55x71).
+ Nothing selected: panel art 0x800100C1+race frames 0xA/0xE/0xF at (0,0) (frames carry absolute offsets).
+ After the portrait, own units: frame DrawImage(0x800100E3+race, 0, 0,0) + bio-upgrade icons frames 1..5 if U(id)+0x23 bits 0..4.
+
+2. HEALTH / MANA (own and foreign units; mana/secondary bar only for own units)
+ HP bar  (0x417A0C): w = 0x42E2E4(id); if (w <= 0) w = 1; FillRect(0x213, 0x17A, w, 4, 0x5D)
+ 2nd bar (0x417AD8), own units only:
+   if TT(type)[0x12] (max mana) != 0: w = 0x42E334(id); if (w > 0) FillRect(0x213, 0x184, w, 4, 0x0F)
+   else rec = 0x427864(id, 0x1C) (timed-effect table, 9-byte records at 0x5425B8, count *(int*)0x4B3AE4, index 1..n;
+        rec: +0 u16 thing id (or id+0x800), +3 u16 current, +5 u16 total, +7 u8 kind); if found:
+        w = (95*cur + total/2)/total, min 1; FillRect(0x213, 0x184, w, 4, 0x0F); else art frame 0xF (0x800100C1+race) clears it.
+ hp    = *(u16*)(U(id) + 0x10)          (0x4EA7B0 + ext*0x78; also printed as "HitPoints: %d" TXT 0x414)
+ maxHp = *(u16*)(TT(type) + 1)          (0x4B3C39 + type*0x20)
+ mana  = *(u8*) (U(id) + 0x12)          (0x4EA7B2 + ext*0x78)
+ maxMana = *(u8*)(TT(type) + 0x12)      (0x4B3C4A + type*0x20; 0 = no mana: most units; e.g. types 0x14,0x15,0x1E.. casters)
+ Scale 0x429998(v, max): 0 if v==0||max==0; if v>max -> min(max,95); else (v*95 + max/2)/max. Bar max width 95 px (0x5F).
+ Colours: HP 0x5D, mana/progress 0x0F. Nothing draws an empty-bar background: the panel art has the trough, the art frame
+   0xF of 0x800100C1+race covers the 2nd bar. In-game palette = RES.001 #0 (SetPaletteResource(0x80010000) at 0x41F805):
+   idx 0x5D = (0,129,250) blue, idx 0x0F = (234,250,0) yellow (UNVERIFIED: palette may be modified at runtime).
+ Category 8: hp = U(id)+0x10, max = 80 constant (0x418092), same bar. Buildings: width 0x44A720(id); cat 3: 0x43F90C(id)
+   (not decoded, both already return widths 0..95).
+ Dead/dying units: U(id)+0x15 (0x4EA7B5) == 2/3 (from kb), Thing flags bit 0x20 = removed.
+
+3. CONTROL GROUPS (0x4B99E0)
+ u16 g_groups[10][18]; group n at 0x4B99E0 + n*0x24; members are thing ids, list terminated by 0 (max 18 slots read; a
+   selection holds <= 16 cat 2/3 things so <= 16 members + terminator). Total 0x168 bytes; ClearGroups 0x47AD88 zeroes it;
+   saved/loaded as 0xB4 words (0x446241 save, 0x446764 load).
+ count(n): k=0; while (k<18 && g[n][k]) k++.   member(n,k) = g[n][k].
+ AssignGroup(n) 0x47ADAC: walks selection list from g_firstSelected via T->nextSel (+0x45), stores every id whose category != 8,
+   then writes a 0 terminator (empty selection -> clears the group). Called with n = MapVirtualKeyA(vk,2) - '0' (0x47B52B).
+ RecallGroup(n) 0x47AE00: DeselectThing every selected thing, g_firstSelected=0, then for each member k (k<18, until 0):
+   stops at the FIRST member with T->flags & 0x20 (break, not skip); SelectThing(id, 0, 0, 1, g_playerClan, 0);
+   finally CenterViewOnThing(g_firstSelected). Called with n = char - '0' (0x47B504, only when !ctrl && !alt and no popup).
+ Key '0' -> group 0 (index 0), '1'..'9' -> 1..9. Nothing uses index 10.
+ Dead members are removed by RemoveThingFromGroups 0x47AD1C(id) (memmove over all 10 groups).
+
+4. NAME PLATE (text centred in 0x60 px at (0x213,0x11C))
+ 0x440034(x, y, width, resId): TextCentredRes: s = GetResPtr(resId) 0x41094C; x += (width - TextWidth 0x43FF30(resId))/2; draw.
+ 0x440074(x, y, width, char* s): same for a C string (width 0x43FF7C).
+ 0x41094C GetResPtr(resId): file = (id>>16)&0x7FFF, idx = id&0xFFFF; return base[file] + offs[file][idx] (table 0x4C2A00, 20 bytes/file).
+ Several selected (0x801):  TXT(0x1A1 + g_playerRace)  "Tha' Roon Group" / "Obblinox Group" / "Eaggra Group" / "Shama' Li Group"
+   (always the PLAYER's race, not the members').
+ Single unit (cat 2), own or 0x4B2675 set:
+   if cur == *(u16*)(0x544192 + (clan-1)*0x101)  -> string at 0x5440F8 + (clan-1)*0x101 (clan record; player/leader name)
+   else if *(u8*)(U(id)+0x2B) != 0             -> string at U(id)+0x2B (custom hero name)
+   else                                          -> TXT(0x15A + type)  (0x15A Bonca .. 0x166 Minister .. 0x1A0 Elemental)
+   (clan = g_playerClan here.)
+ Enemy unit: TXT(0x1A5 + GetUnitRace(id)) ("Tha' Roon" ... "Shama' Li"). Race<0 creature: TXT(0x15A + type).
+ Building: TXT(0x1A9 + type). Category 3: TXT(0x1C5 + type) (Truck, Barge, Cruiser, Ferry...). Category 8: TXT(0x1CC - type).
+ Note kb.h's "units 0x80020071+type" is a different archive; the panel uses RES.000 0x15A+type.
+
+UNCERTAINTIES
+ - Colours only as palette indices; RGB from the static RES.001 #0 palette. 0x4B2675 is a global "show enemy details" flag (cheat/
+   debug?), not identified. 0x544192/0x5440F8 clan-record meaning (leader id / name) inferred from usage only.
+ - 0x427864 kind 0x1C secondary bar = some timed effect/progress for units without mana (not identified).
+
+// ---- kb.h-style lines
+@ 0x42B3C0 int __watcall GetUnitRace(int id /*eax*/);           // race 0..3 of a unit TYPE (0xC..0x33 -> (t-12)/10, specials table), -1 creatures
+@ 0x416EE4 void __watcall DrawSpecialPortrait(int id /*eax*/);  // types 0x34..0x46, table 0x416E98, at (0x213,0x12E)
+@ 0x42E2E4 int __watcall HpBarWidth(int id /*eax*/);            // ScaleBar(U+0x10 word, TT+1 word)
+@ 0x42E334 int __watcall ManaBarWidth(int id /*eax*/);          // ScaleBar(U+0x12 byte, TT+0x12 byte)
+@ 0x429998 int __watcall ScaleBar(int v /*eax*/, int max /*edx*/); // 0..95 px
+@ 0x427864 int __watcall FindTimedEffect(int id /*eax*/, char kind /*dl*/); // index into 9-byte recs 0x5425B8 (1..*0x4B3AE4), 0 none
+@ 0x44A720 int __watcall BuildingHpBarWidth(int id /*eax*/);
+@ 0x43F90C int __watcall Cat3HpBarWidth(int id /*eax*/);
+@ 0x44A6D0 int __watcall GetBuildingRace(int id /*eax*/);
+@ 0x440034 void __watcall DrawTextCentredRes(int x /*eax*/, int y /*edx*/, int width /*ebx*/, int resId /*ecx*/);
+@ 0x440074 void __watcall DrawTextCentred(int x /*eax*/, int y /*edx*/, int width /*ebx*/, const char* s /*ecx*/);
+@ 0x41094C void* __watcall GetResPtr(int resId /*eax*/);        // RES file (id>>16)&0x7FFF, entry id&0xFFFF; table 0x4C2A00 stride 20
+@ 0x43FF30 int __watcall TextWidthRes(int resId /*eax*/);
+@ 0x43FF7C int __watcall TextWidth(const char* s /*eax*/);
+@ 0x47AD1C void __watcall RemoveThingFromGroups(int id /*eax*/);
+@ 0x47ADAC void __watcall AssignGroup(int n /*eax 0..9*/);     // selection (cat != 8) -> g_groups[n], 0-terminated
+@ 0x47AE00 void __watcall RecallGroup(int n /*eax 0..9*/);     // '0' -> 0; stops at first member with flags&0x20
+$ 0x4B99E0 ushort g_groups[10][18]                  // stride 0x24, 0-terminated id lists
+$ 0x4EA7A0 UnitExt g_unitExt[]                      // stride 0x78 (cat 2 and 8): +0x10 u16 hp, +0x12 u8 mana, +0x15 state, +0x1E stealth, +0x23 bio-upgrade bits, +0x2B char name[] (custom)
+$ 0x4B3C38 uchar g_unitTypeTable[][0x20]           // +0 slot/class (1..10 race units, 11 creature, 12/13 special), +1 u16 maxHp, +0x12 u8 maxMana
+$ 0x4B33D1 uchar g_creaturePortraitFrame[0x0C]     // frame in 0x800100DD for types < 0xC
+$ 0x416E98 void* g_specialPortraitJump[19]         // types 0x34..0x46
+$ 0x5425B8 TimedEffect g_timedEffects[]            // 9 bytes: +0 u16 id, +3 u16 cur, +5 u16 total, +7 u8 kind; count *(int*)0x4B3AE4
+$ 0x4B2675 char g_showEnemyDetails                 // nonzero: foreign units get full portrait/name (unidentified flag)
+$ 0x544192 ushort g_clanLeaderId                   // + (clan-1)*0x101; name string at 0x5440F8 + (clan-1)*0x101
+// Portrait: res 0x800100D3+race, frame TT(type)[0]-1, 55x71, stored offset (0,0), panel draws at (0x213,0x12E)
+// Group portrait 0x800100DE frame race; enemy 0x800100E0 frame race; creature 0x800100DD frame 0x4B33D1[type]
+// HP bar FillRect(0x213,0x17A,w,4,0x5D); mana FillRect(0x213,0x184,w,4,0x0F); w = ScaleBar (max 95)
+// Names: TXT 0x15A+type (unit), 0x1A1+playerRace (group), 0x1A5+race (enemy), 0x1A9+type (building), 0x1C5+type (cat 3), 0x1CC-type (cat 8)

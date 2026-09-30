@@ -1,0 +1,1050 @@
+diff --git a/cnc-ddraw.vcxproj b/cnc-ddraw.vcxproj
+index 3f5d12d..a5c48d6 100644
+--- a/cnc-ddraw.vcxproj
++++ b/cnc-ddraw.vcxproj
+@@ -66,6 +66,7 @@
+     <ClCompile Include="src\ddpalette.c" />
+     <ClCompile Include="src\render_ogl.c" />
+     <ClCompile Include="src\render_d3d9.c" />
++    <ClCompile Include="src\wwfx.c" />
+     <ClCompile Include="src\render_gdi.c" />
+     <ClCompile Include="src\screenshot.c" />
+     <ClCompile Include="src\config.c" />
+@@ -104,6 +105,7 @@
+     <ClInclude Include="inc\lodepng.h" />
+     <ClInclude Include="inc\mouse.h" />
+     <ClInclude Include="inc\render_d3d9.h" />
++    <ClInclude Include="inc\wwfx.h" />
+     <ClInclude Include="inc\debug.h" />
+     <ClInclude Include="inc\dd.h" />
+     <ClInclude Include="inc\opengl_utils.h" />
+diff --git a/cnc-ddraw.vcxproj.filters b/cnc-ddraw.vcxproj.filters
+index b15230e..42ad828 100644
+--- a/cnc-ddraw.vcxproj.filters
++++ b/cnc-ddraw.vcxproj.filters
+@@ -39,6 +39,9 @@
+     <ClCompile Include="src\render_d3d9.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
++    <ClCompile Include="src\wwfx.c">
++      <Filter>Source Files</Filter>
++    </ClCompile>
+     <ClCompile Include="src\lodepng.c">
+       <Filter>Source Files</Filter>
+     </ClCompile>
+@@ -182,6 +185,9 @@
+     <ClInclude Include="inc\render_d3d9.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>
++    <ClInclude Include="inc\wwfx.h">
++      <Filter>Header Files</Filter>
++    </ClInclude>
+     <ClInclude Include="inc\glcorearb.h">
+       <Filter>Header Files</Filter>
+     </ClInclude>
+diff --git a/exports.def b/exports.def
+index 1e25f0f..ae4c78e 100644
+--- a/exports.def
++++ b/exports.def
+@@ -23,3 +23,7 @@ EXPORTS
+     DDIsWindowed
+     DDGetProcAddress
+     DDEnableZoom
++    WWFX_Setup
++    WWFX_Submit
++    WWFX_Available
++    WWFX_Screenshot
+diff --git a/inc/wwfx.h b/inc/wwfx.h
+new file mode 100644
+index 0000000..42368ca
+--- /dev/null
++++ b/inc/wwfx.h
+@@ -0,0 +1,125 @@
++#ifndef WWFX_H
++#define WWFX_H
++
++/*
++ * War Wind "Modern Graphics": a post-process for 8-bit paletted frames.
++ *
++ * The game side (the War Wind HD proxy) submits, for every flipped frame, per-pixel side planes
++ * that describe what each palette index on screen is (terrain, unit, building, UI ...) and how
++ * much projected shadow covers it, plus a list of point lights. The D3D9 renderer latches them
++ * together with the frame at Flip and replaces its single palette pass by a lighting chain.
++ * Frames without a submission render exactly as before.
++ */
++
++#include <windows.h>
++
++#define WWFX_VERSION 3
++
++/* Mask plane values: what a screen pixel shows. */
++enum
++{
++    WWFX_CLASS_NONE = 0,      /* UI, text, cursor: shown untouched */
++    WWFX_CLASS_TERRAIN = 1,   /* ground; the shader finds water on it by its palette colours */
++    WWFX_CLASS_UNIT = 3,
++    WWFX_CLASS_BUILDING = 4,
++    WWFX_CLASS_DOODAD = 5,    /* trees, rocks, walls, resources */
++    WWFX_CLASS_EFFECT = 6,    /* projectiles, explosions, spells */
++};
++
++#define WWFX_MAX_LIGHTS 256
++
++typedef struct WWFX_LIGHT
++{
++    float x, y;               /* frame pixels */
++    float radius;             /* frame pixels */
++    float r, g, b;            /* linear colour times intensity */
++    float flicker;            /* 0 = steady, 1 = full fire flicker */
++    float seed;               /* decorrelates flicker between lights */
++} WWFX_LIGHT;
++
++typedef struct WWFX_PARAMS
++{
++    float shadow_opacity;     /* 0..1 darkening under full shadow */
++    float shadow_softness;    /* blur radius, frame pixels */
++    float ao_strength;        /* 0..1 contact darkening around objects */
++    float ao_radius;          /* frame pixels */
++    float ambient;            /* scene brightness without lights, 1 = original */
++    float light_intensity;    /* point lights and emissive glow */
++    float emissive_glow;      /* glow radius, frame pixels */
++    float bloom;              /* extra additive glow on emissive pixels */
++    float contrast;           /* 1 = unchanged */
++    float saturation;         /* 1 = unchanged */
++    float vignette;           /* 0 = off */
++    float sharpen;            /* 0 = off */
++    float shadow_tint[3];     /* colour multiplied into shadowed ground */
++    float fog_opacity;        /* darkening of terrain and things outside the player's sight */
++    float water_waves;        /* wave distortion of water, frame pixels (0 = off) */
++    float water_glints;       /* sun sparkles and caustics on water, 0..1+ */
++    float water_foam;         /* foam along shores, 0..1+ */
++} WWFX_PARAMS;
++
++typedef struct WWFX_SETUP
++{
++    int version;              /* WWFX_VERSION */
++    char shader_path[MAX_PATH];
++    WWFX_PARAMS params;
++    /* Per palette index: rgb tint and strength (a) of light the colour emits; 0 = none. */
++    unsigned char emissive[256][4];
++} WWFX_SETUP;
++
++typedef struct WWFX_FRAME
++{
++    int width, height;        /* must match the primary surface */
++    const unsigned char* mask;    /* WWFX_CLASS_* per pixel */
++    int mask_pitch;
++    const unsigned char* shadow;  /* projected shadow coverage 0..255 per pixel */
++    int shadow_pitch;
++    const unsigned char* fog;     /* fog-of-war coverage 0..255 per pixel */
++    int fog_pitch;
++    const WWFX_LIGHT* lights;
++    int light_count;
++    float world_x, world_y;   /* world pixel shown at frame (0, 0): anchors animated water to the map */
++} WWFX_FRAME;
++
++/* Exports (stdcall). */
++typedef BOOL(WINAPI* WWFX_SETUP_PROC)(const WWFX_SETUP* setup);
++typedef BOOL(WINAPI* WWFX_SUBMIT_PROC)(const WWFX_FRAME* frame);
++typedef BOOL(WINAPI* WWFX_AVAILABLE_PROC)(void);
++typedef BOOL(WINAPI* WWFX_SCREENSHOT_PROC)(const char* png_path);
++
++#ifdef WWFX_INTERNAL
++#include <d3d9.h>
++
++/* Staging (game thread) and latching (inside Flip, under the ddraw lock). */
++void wwfx_latch(void);
++void wwfx_invalidate(void);
++
++/* GPU side, independent of cnc-ddraw's globals so tools can drive it. */
++typedef struct WWFX_TARGET
++{
++    IDirect3DTexture9* index_tex;     /* L8, frame in the top-left corner */
++    IDirect3DTexture9* palette_tex;   /* 256x1 X8R8G8B8 */
++    int tex_width, tex_height;        /* size of index_tex */
++    D3DVIEWPORT9 viewport;            /* where the frame lands on the render target */
++    float time;                       /* seconds, drives flicker and water */
++} WWFX_TARGET;
++
++BOOL wwfx_gpu_create(IDirect3DDevice9* device, int width, int height, int tex_width, int tex_height);
++void wwfx_gpu_release_default(void);       /* before IDirect3DDevice9::Reset */
++BOOL wwfx_gpu_restore_default(void);       /* after Reset */
++void wwfx_gpu_release(void);
++BOOL wwfx_gpu_ready(void);
++/* Uploads the latched planes when they changed; call under the lock guarding them. */
++BOOL wwfx_gpu_upload(void);
++/* Draws the lit frame into the current render target; FALSE = draw the plain frame instead. */
++BOOL wwfx_gpu_render(const WWFX_TARGET* target);
++/* Saves the render target (call before Present) if a screenshot was requested. */
++BOOL wwfx_request_screenshot(const char* png_path);
++void wwfx_gpu_capture(IDirect3DSurface9* back_buffer);
++
++/* Tool entry points (fxpreview): same as the exports, callable directly. */
++BOOL wwfx_setup(const WWFX_SETUP* setup);
++BOOL wwfx_submit(const WWFX_FRAME* frame);
++#endif
++
++#endif
+diff --git a/src/ddsurface.c b/src/ddsurface.c
+index 96d69de..4653ff1 100644
+--- a/src/ddsurface.c
++++ b/src/ddsurface.c
+@@ -16,6 +16,8 @@
+ #include "versionhelpers.h"
+ #include "ddpalette.h"
+ #include "palette.h"
++#define WWFX_INTERNAL
++#include "wwfx.h"
+ 
+ 
+ LONG g_dds_gdi_handles;
+@@ -829,6 +831,10 @@ HRESULT dds_Flip(IDirectDrawSurfaceImpl* This, IDirectDrawSurfaceImpl* lpDDSurfa
+             blt_clear(buf, 0, backbuffer->size);
+         }
+ 
++        /* The frame's post-process planes become current with the frame itself. */
++        if (This->caps & DDSCAPS_PRIMARYSURFACE)
++            wwfx_latch();
++
+         LeaveCriticalSection(&g_ddraw.cs);
+ 
+         if (!lpDDSurfaceTargetOverride && This->backbuffer->backbuffer)
+diff --git a/src/render_d3d9.c b/src/render_d3d9.c
+index c6c4959..da9754f 100644
+--- a/src/render_d3d9.c
++++ b/src/render_d3d9.c
+@@ -13,6 +13,8 @@
+ #include "d3d9types.h"
+ #include "hook.h"
+ #include "config.h"
++#define WWFX_INTERNAL
++#include "wwfx.h"
+ 
+ 
+ #ifdef _DEBUG
+@@ -225,9 +227,12 @@ BOOL d3d9_reset(BOOL windowed)
+         g_d3d9.backdrop = NULL;
+     }
+ 
++    wwfx_gpu_release_default();
++
+     if (g_d3d9.device && SUCCEEDEDX(IDirect3DDevice9_Reset(g_d3d9.device, &g_d3d9.params)))
+     {
+         d3d9_create_backdrop();
++        wwfx_gpu_restore_default();
+ 
+         BOOL result = d3d9_set_states();
+ 
+@@ -246,6 +251,8 @@ BOOL d3d9_reset(BOOL windowed)
+ 
+ BOOL d3d9_release_resources()
+ {
++    wwfx_gpu_release();
++
+     if (g_d3d9.pixel_shader)
+     {
+         IDirect3DPixelShader9_Release(g_d3d9.pixel_shader);
+@@ -458,6 +465,9 @@ static BOOL d3d9_create_resources()
+         err = err || FAILEDX(
+             IDirect3DDevice9_CreatePixelShader(g_d3d9.device, (DWORD*)D3D9_PALETTE_SHADER, &g_d3d9.pixel_shader));
+ 
++        if (!err)
++            wwfx_gpu_create(g_d3d9.device, width, height, g_d3d9.tex_width, g_d3d9.tex_height);
++
+         IDirect3DDevice9_CreatePixelShader(
+             g_d3d9.device, 
+             (DWORD*)D3D9_PALETTE_SHADER_BILINEAR, 
+@@ -633,6 +643,35 @@ static void d3d9_clear_borders()
+     IDirect3DDevice9_Clear(g_d3d9.device, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
+ }
+ 
++/* War Wind "Modern Graphics": the lit frame through wwfx, then the plain path's state restored. */
++static BOOL d3d9_render_fx(int tex_index, int pal_index)
++{
++    WWFX_TARGET target;
++    target.index_tex = g_d3d9.surface_tex[tex_index];
++    target.palette_tex = g_d3d9.palette_tex[pal_index];
++    target.tex_width = g_d3d9.tex_width;
++    target.tex_height = g_d3d9.tex_height;
++    target.viewport.X = g_ddraw.render.viewport.x;
++    target.viewport.Y = g_ddraw.render.viewport.y;
++    target.viewport.Width = g_ddraw.render.viewport.width;
++    target.viewport.Height = g_ddraw.render.viewport.height;
++    target.viewport.MinZ = 0.0f;
++    target.viewport.MaxZ = 1.0f;
++    target.time = timeGetTime() / 1000.0f;
++
++    D3DVIEWPORT9 full;
++    IDirect3DDevice9_GetViewport(g_d3d9.device, &full);
++
++    BOOL drawn = wwfx_gpu_render(&target);
++
++    IDirect3DDevice9_SetViewport(g_d3d9.device, &full);
++    d3d9_set_states();
++    IDirect3DDevice9_SetTexture(g_d3d9.device, 0, (IDirect3DBaseTexture9*)g_d3d9.surface_tex[tex_index]);
++    IDirect3DDevice9_SetTexture(g_d3d9.device, 1, (IDirect3DBaseTexture9*)g_d3d9.palette_tex[pal_index]);
++
++    return drawn;
++}
++
+ DWORD WINAPI d3d9_render_main(void)
+ {
+     Sleep(250);
+@@ -652,6 +691,7 @@ DWORD WINAPI d3d9_render_main(void)
+ #endif
+ 
+         static int tex_index = 0, pal_index = 0;
++        BOOL fx_frame = FALSE;
+ 
+         fpsl_frame_start();
+ 
+@@ -750,6 +790,8 @@ DWORD WINAPI d3d9_render_main(void)
+ 
+             if (g_config.lock_surfaces)
+                 LeaveCriticalSection(&g_ddraw.primary->cs);
++
++            fx_frame = g_ddraw.bpp == 8 && wwfx_gpu_upload();
+         }
+ 
+         LeaveCriticalSection(&g_ddraw.cs);
+@@ -760,9 +802,23 @@ DWORD WINAPI d3d9_render_main(void)
+         }
+ 
+         IDirect3DDevice9_BeginScene(g_d3d9.device);
+-        IDirect3DDevice9_DrawPrimitive(g_d3d9.device, D3DPT_TRIANGLESTRIP, 0, 2);
++
++        if (!fx_frame || !d3d9_render_fx(tex_index, pal_index))
++            IDirect3DDevice9_DrawPrimitive(g_d3d9.device, D3DPT_TRIANGLESTRIP, 0, 2);
++
+         IDirect3DDevice9_EndScene(g_d3d9.device);
+ 
++        if (g_ddraw.bpp == 8)
++        {
++            IDirect3DSurface9* back_buffer = NULL;
++
++            if (SUCCEEDED(IDirect3DDevice9_GetBackBuffer(g_d3d9.device, 0, 0, D3DBACKBUFFER_TYPE_MONO, &back_buffer)))
++            {
++                wwfx_gpu_capture(back_buffer);
++                IDirect3DSurface9_Release(back_buffer);
++            }
++        }
++
+         if (g_ddraw.bnet_active)
+         {
+             IDirect3DDevice9_Clear(g_d3d9.device, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
+diff --git a/src/wwfx.c b/src/wwfx.c
+new file mode 100644
+index 0000000..681b95f
+--- /dev/null
++++ b/src/wwfx.c
+@@ -0,0 +1,710 @@
++#define WWFX_INTERNAL
++#include "wwfx.h"
++
++#include <windows.h>
++#include <d3d9.h>
++#include <math.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++#include "lodepng.h"
++
++/* ---- staging and latching ------------------------------------------------------------------
++ *
++ * The game thread copies each submission into `staged`; Flip moves it into `latched` in the same
++ * critical section that swaps the frame buffers, so the render thread always sees planes that
++ * belong to the frame it uploads. A flip without a new submission leaves nothing latched.
++ */
++
++typedef struct FX_PLANES
++{
++    int width, height;
++    unsigned char* mask;
++    unsigned char* shadow;
++    unsigned char* fog;
++    WWFX_LIGHT lights[WWFX_MAX_LIGHTS];
++    int light_count;
++    float world_x, world_y;
++    BOOL valid;
++} FX_PLANES;
++
++static CRITICAL_SECTION g_stage_cs;
++static LONG g_stage_cs_ready;
++static FX_PLANES g_staged, g_latched;
++static LONG g_latched_serial, g_uploaded_serial = -1;
++
++static WWFX_SETUP g_setup;
++static LONG g_setup_serial, g_setup_applied = -1;
++
++static volatile LONG g_screenshot_pending;
++static char g_screenshot_path[MAX_PATH];
++
++static void stage_lock(void)
++{
++    if (!InterlockedCompareExchange(&g_stage_cs_ready, 1, 0))
++        InitializeCriticalSection(&g_stage_cs);
++    EnterCriticalSection(&g_stage_cs);
++}
++
++static void stage_unlock(void)
++{
++    LeaveCriticalSection(&g_stage_cs);
++}
++
++static BOOL planes_resize(FX_PLANES* p, int width, int height)
++{
++    if (p->width == width && p->height == height && p->mask)
++        return TRUE;
++    free(p->mask);
++    free(p->shadow);
++    free(p->fog);
++    p->mask = malloc((size_t)width * height);
++    p->shadow = malloc((size_t)width * height);
++    p->fog = malloc((size_t)width * height);
++    p->width = p->mask && p->shadow && p->fog ? width : 0;
++    p->height = p->width ? height : 0;
++    return p->width != 0;
++}
++
++static void copy_plane(unsigned char* dst, int width, int height, const unsigned char* src, int pitch)
++{
++    for (int y = 0; y < height; y++)
++        memcpy(dst + (size_t)y * width, src + (size_t)y * pitch, width);
++}
++
++BOOL wwfx_setup(const WWFX_SETUP* setup)
++{
++    if (!setup || setup->version != WWFX_VERSION)
++        return FALSE;
++    stage_lock();
++    g_setup = *setup;
++    InterlockedIncrement(&g_setup_serial);
++    stage_unlock();
++    return TRUE;
++}
++
++BOOL wwfx_submit(const WWFX_FRAME* frame)
++{
++    if (!frame || frame->width <= 0 || frame->height <= 0)
++        return FALSE;
++    stage_lock();
++    BOOL ok = planes_resize(&g_staged, frame->width, frame->height);
++    if (ok)
++    {
++        copy_plane(g_staged.mask, frame->width, frame->height, frame->mask, frame->mask_pitch);
++        copy_plane(g_staged.shadow, frame->width, frame->height, frame->shadow, frame->shadow_pitch);
++        copy_plane(g_staged.fog, frame->width, frame->height, frame->fog, frame->fog_pitch);
++        g_staged.light_count = frame->light_count < WWFX_MAX_LIGHTS ? frame->light_count : WWFX_MAX_LIGHTS;
++        if (g_staged.light_count > 0)
++            memcpy(g_staged.lights, frame->lights, sizeof(WWFX_LIGHT) * g_staged.light_count);
++        g_staged.world_x = frame->world_x;
++        g_staged.world_y = frame->world_y;
++        g_staged.valid = TRUE;
++    }
++    stage_unlock();
++    return ok && wwfx_gpu_ready();
++}
++
++void wwfx_latch(void)
++{
++    if (!g_stage_cs_ready)
++        return;
++    stage_lock();
++    FX_PLANES t = g_latched;
++    g_latched = g_staged;
++    g_staged = t;
++    g_staged.valid = FALSE;
++    InterlockedIncrement(&g_latched_serial);
++    stage_unlock();
++}
++
++void wwfx_invalidate(void)
++{
++    if (!g_stage_cs_ready)
++        return;
++    stage_lock();
++    if (g_latched.valid)
++    {
++        g_latched.valid = FALSE;
++        InterlockedIncrement(&g_latched_serial);
++    }
++    stage_unlock();
++}
++
++/* ---- FX_GPU ----------------------------------------------------------------------------------- */
++
++typedef struct FXVERTEX
++{
++    float x, y, z, w;
++    float u, v;
++    float r, g, b, a;
++} FXVERTEX;
++
++enum { PS_PREP, PS_EMISSIVE, PS_BLUR, PS_LIGHT, PS_FINAL, PS_COUNT };
++static const char* const kPsEntry[PS_COUNT] = { "PsPrep", "PsEmissive", "PsBlur", "PsLight", "PsFinal" };
++
++enum { RT_PREP, RT_HALF_TMP, RT_SHADOW, RT_OCCLUSION, RT_LIGHT, RT_LIGHT_TMP, RT_COUNT };
++
++typedef struct FX_GPU
++{
++    IDirect3DDevice9* device;
++    int width, height;              /* frame */
++    int tex_width, tex_height;      /* input textures */
++    IDirect3DTexture9* mask_tex;
++    IDirect3DTexture9* shadow_tex;
++    IDirect3DTexture9* fog_tex;
++    IDirect3DTexture9* emissive_tex;
++    IDirect3DTexture9* rt[RT_COUNT];
++    int rt_width[RT_COUNT], rt_height[RT_COUNT];
++    IDirect3DVertexShader9* vs;
++    IDirect3DPixelShader9* ps[PS_COUNT];
++    IDirect3DVertexDeclaration9* decl;
++    BOOL shaders_failed;
++    BOOL frame_valid;               /* the uploaded planes belong to a submitted frame */
++    FX_PLANES frame;                   /* the render thread's copy of the latched planes */
++} FX_GPU;
++
++static FX_GPU g_gpu;
++
++typedef HRESULT(WINAPI* D3DCOMPILE_PROC)(
++    LPCVOID, SIZE_T, LPCSTR, const void*, void*, LPCSTR, LPCSTR, UINT, UINT, void**, void**);
++
++/* ID3DBlob without d3dcommon.h: IUnknown + GetBufferPointer + GetBufferSize. */
++typedef struct SHADER_BLOB SHADER_BLOB;
++typedef struct SHADER_BLOB_VTBL
++{
++    HRESULT(STDMETHODCALLTYPE* QueryInterface)(SHADER_BLOB*, REFIID, void**);
++    ULONG(STDMETHODCALLTYPE* AddRef)(SHADER_BLOB*);
++    ULONG(STDMETHODCALLTYPE* Release)(SHADER_BLOB*);
++    LPVOID(STDMETHODCALLTYPE* GetBufferPointer)(SHADER_BLOB*);
++    SIZE_T(STDMETHODCALLTYPE* GetBufferSize)(SHADER_BLOB*);
++} SHADER_BLOB_VTBL;
++struct SHADER_BLOB { const SHADER_BLOB_VTBL* lpVtbl; };
++
++static void wwfx_log(const char* fmt, ...)
++{
++    char line[1024];
++    va_list ap;
++    va_start(ap, fmt);
++    _vsnprintf_s(line, sizeof(line), _TRUNCATE, fmt, ap);
++    va_end(ap);
++    OutputDebugStringA(line);
++
++    char path[MAX_PATH];
++    if (!GetModuleFileNameA(NULL, path, sizeof(path)))
++        return;
++    char* slash = strrchr(path, '\\');
++    if (!slash)
++        return;
++    strcpy_s(slash + 1, sizeof(path) - (slash + 1 - path), "wwfx.log");
++    FILE* f = NULL;
++    if (fopen_s(&f, path, "a") == 0 && f)
++    {
++        fprintf(f, "%s\n", line);
++        fclose(f);
++    }
++}
++
++static void* compile(D3DCOMPILE_PROC d3d_compile, const char* src, size_t len, const char* entry, const char* profile)
++{
++    SHADER_BLOB* code = NULL;
++    SHADER_BLOB* errors = NULL;
++    HRESULT hr = d3d_compile(src, len, g_setup.shader_path, NULL, NULL, entry, profile, 1 << 15 /* O3 */, 0,
++        (void**)&code, (void**)&errors);
++    if (errors)
++    {
++        wwfx_log("wwfx: %s %s: %.*s", entry, profile, (int)errors->lpVtbl->GetBufferSize(errors),
++            (const char*)errors->lpVtbl->GetBufferPointer(errors));
++        errors->lpVtbl->Release(errors);
++    }
++    if (FAILED(hr))
++    {
++        if (code)
++            code->lpVtbl->Release(code);
++        return NULL;
++    }
++    return code;
++}
++
++static void release_shaders(void)
++{
++    if (g_gpu.vs)
++        IDirect3DVertexShader9_Release(g_gpu.vs);
++    g_gpu.vs = NULL;
++    for (int i = 0; i < PS_COUNT; i++)
++    {
++        if (g_gpu.ps[i])
++            IDirect3DPixelShader9_Release(g_gpu.ps[i]);
++        g_gpu.ps[i] = NULL;
++    }
++}
++
++static BOOL load_shaders(void)
++{
++    release_shaders();
++    g_gpu.shaders_failed = TRUE;
++
++    HMODULE compiler = LoadLibraryA("d3dcompiler_47.dll");
++    D3DCOMPILE_PROC d3d_compile = compiler ? (D3DCOMPILE_PROC)GetProcAddress(compiler, "D3DCompile") : NULL;
++    if (!d3d_compile)
++    {
++        wwfx_log("wwfx: d3dcompiler_47.dll not available");
++        return FALSE;
++    }
++
++    FILE* f = NULL;
++    if (fopen_s(&f, g_setup.shader_path, "rb") != 0 || !f)
++    {
++        wwfx_log("wwfx: cannot open %s", g_setup.shader_path);
++        return FALSE;
++    }
++    fseek(f, 0, SEEK_END);
++    long len = ftell(f);
++    fseek(f, 0, SEEK_SET);
++    char* src = malloc(len + 1);
++    size_t got = src ? fread(src, 1, len, f) : 0;
++    fclose(f);
++    if (!src || got != (size_t)len)
++    {
++        free(src);
++        return FALSE;
++    }
++
++    BOOL ok = TRUE;
++    SHADER_BLOB* vs = compile(d3d_compile, src, len, "VsQuad", "vs_3_0");
++    ok = vs && SUCCEEDED(IDirect3DDevice9_CreateVertexShader(
++        g_gpu.device, (const DWORD*)vs->lpVtbl->GetBufferPointer(vs), &g_gpu.vs));
++    if (vs)
++        vs->lpVtbl->Release(vs);
++
++    for (int i = 0; ok && i < PS_COUNT; i++)
++    {
++        SHADER_BLOB* ps = compile(d3d_compile, src, len, kPsEntry[i], "ps_3_0");
++        ok = ps && SUCCEEDED(IDirect3DDevice9_CreatePixelShader(
++            g_gpu.device, (const DWORD*)ps->lpVtbl->GetBufferPointer(ps), &g_gpu.ps[i]));
++        if (ps)
++            ps->lpVtbl->Release(ps);
++    }
++    free(src);
++
++    if (!ok)
++    {
++        release_shaders();
++        return FALSE;
++    }
++    g_gpu.shaders_failed = FALSE;
++    wwfx_log("wwfx: shaders compiled from %s", g_setup.shader_path);
++    return TRUE;
++}
++
++static BOOL create_emissive_tex(void)
++{
++    if (!g_gpu.emissive_tex &&
++        FAILED(IDirect3DDevice9_CreateTexture(g_gpu.device, 256, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
++            &g_gpu.emissive_tex, NULL)))
++        return FALSE;
++
++    D3DLOCKED_RECT lr;
++    if (FAILED(IDirect3DTexture9_LockRect(g_gpu.emissive_tex, 0, &lr, NULL, 0)))
++        return FALSE;
++    unsigned char* p = lr.pBits;
++    for (int i = 0; i < 256; i++)
++    {
++        /* D3DFMT_A8R8G8B8 is B, G, R, A in memory */
++        p[i * 4 + 0] = g_setup.emissive[i][2];
++        p[i * 4 + 1] = g_setup.emissive[i][1];
++        p[i * 4 + 2] = g_setup.emissive[i][0];
++        p[i * 4 + 3] = g_setup.emissive[i][3];
++    }
++    IDirect3DTexture9_UnlockRect(g_gpu.emissive_tex, 0);
++    return TRUE;
++}
++
++static BOOL apply_setup(void)
++{
++    LONG serial = InterlockedExchangeAdd(&g_setup_serial, 0);
++    if (serial == g_setup_applied)
++        return !g_gpu.shaders_failed;
++    if (serial == 0)
++        return FALSE;
++    stage_lock();
++    g_setup_applied = serial;
++    stage_unlock();
++    return load_shaders() && create_emissive_tex();
++}
++
++BOOL wwfx_gpu_restore_default(void)
++{
++    static const int kDiv[RT_COUNT] = { 2, 2, 2, 2, 4, 4 };
++    BOOL ok = TRUE;
++    for (int i = 0; i < RT_COUNT && ok; i++)
++    {
++        g_gpu.rt_width[i] = g_gpu.width / kDiv[i];
++        g_gpu.rt_height[i] = g_gpu.height / kDiv[i];
++        D3DFORMAT fmt = i >= RT_LIGHT ? D3DFMT_A16B16G16R16F : D3DFMT_A8R8G8B8;
++        ok = SUCCEEDED(IDirect3DDevice9_CreateTexture(g_gpu.device, g_gpu.rt_width[i], g_gpu.rt_height[i], 1,
++            D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, &g_gpu.rt[i], NULL));
++    }
++    if (!ok)
++    {
++        wwfx_log("wwfx: render targets unavailable");
++        wwfx_gpu_release_default();
++    }
++    return ok;
++}
++
++void wwfx_gpu_release_default(void)
++{
++    for (int i = 0; i < RT_COUNT; i++)
++    {
++        if (g_gpu.rt[i])
++            IDirect3DTexture9_Release(g_gpu.rt[i]);
++        g_gpu.rt[i] = NULL;
++    }
++}
++
++void wwfx_gpu_release(void)
++{
++    wwfx_gpu_release_default();
++    release_shaders();
++    if (g_gpu.mask_tex)
++        IDirect3DTexture9_Release(g_gpu.mask_tex);
++    if (g_gpu.shadow_tex)
++        IDirect3DTexture9_Release(g_gpu.shadow_tex);
++    if (g_gpu.fog_tex)
++        IDirect3DTexture9_Release(g_gpu.fog_tex);
++    if (g_gpu.emissive_tex)
++        IDirect3DTexture9_Release(g_gpu.emissive_tex);
++    if (g_gpu.decl)
++        IDirect3DVertexDeclaration9_Release(g_gpu.decl);
++    FX_PLANES frame = g_gpu.frame;
++    memset(&g_gpu, 0, sizeof(g_gpu));
++    g_gpu.frame = frame;
++    g_setup_applied = -1;
++    g_uploaded_serial = -1;
++}
++
++BOOL wwfx_gpu_create(IDirect3DDevice9* device, int width, int height, int tex_width, int tex_height)
++{
++    wwfx_gpu_release();
++    g_gpu.device = device;
++    g_gpu.width = width;
++    g_gpu.height = height;
++    g_gpu.tex_width = tex_width;
++    g_gpu.tex_height = tex_height;
++
++    static const D3DVERTEXELEMENT9 kElements[] = {
++        { 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
++        { 0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
++        { 0, 24, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1 },
++        D3DDECL_END()
++    };
++    BOOL ok =
++        SUCCEEDED(IDirect3DDevice9_CreateVertexDeclaration(device, kElements, &g_gpu.decl)) &&
++        SUCCEEDED(IDirect3DDevice9_CreateTexture(device, tex_width, tex_height, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED,
++            &g_gpu.mask_tex, NULL)) &&
++        SUCCEEDED(IDirect3DDevice9_CreateTexture(device, tex_width, tex_height, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED,
++            &g_gpu.shadow_tex, NULL)) &&
++        SUCCEEDED(IDirect3DDevice9_CreateTexture(device, tex_width, tex_height, 1, 0, D3DFMT_L8, D3DPOOL_MANAGED,
++            &g_gpu.fog_tex, NULL)) &&
++        wwfx_gpu_restore_default();
++    if (!ok)
++    {
++        wwfx_log("wwfx: FX_GPU resources unavailable (%dx%d)", width, height);
++        wwfx_gpu_release();
++        return FALSE;
++    }
++    return TRUE;
++}
++
++BOOL wwfx_gpu_ready(void)
++{
++    return g_gpu.device && g_gpu.rt[0] && InterlockedExchangeAdd(&g_setup_serial, 0) != 0 && !g_gpu.shaders_failed;
++}
++
++static void upload_plane(IDirect3DTexture9* tex, const unsigned char* src, int width, int height)
++{
++    RECT rc = { 0, 0, width, height };
++    D3DLOCKED_RECT lr;
++    if (FAILED(IDirect3DTexture9_LockRect(tex, 0, &lr, &rc, 0)))
++        return;
++    for (int y = 0; y < height; y++)
++        memcpy((unsigned char*)lr.pBits + (size_t)y * lr.Pitch, src + (size_t)y * width, width);
++    IDirect3DTexture9_UnlockRect(tex, 0);
++}
++
++BOOL wwfx_gpu_upload(void)
++{
++    if (!g_gpu.device || !g_stage_cs_ready)
++        return FALSE;
++    LONG serial = InterlockedExchangeAdd(&g_latched_serial, 0);
++    if (serial == g_uploaded_serial)
++        return g_gpu.frame_valid;
++    stage_lock();
++    g_uploaded_serial = serial;
++    g_gpu.frame_valid = g_latched.valid && g_latched.width == g_gpu.width && g_latched.height == g_gpu.height;
++    if (g_gpu.frame_valid)
++    {
++        upload_plane(g_gpu.mask_tex, g_latched.mask, g_latched.width, g_latched.height);
++        upload_plane(g_gpu.shadow_tex, g_latched.shadow, g_latched.width, g_latched.height);
++        upload_plane(g_gpu.fog_tex, g_latched.fog, g_latched.width, g_latched.height);
++        g_gpu.frame.light_count = g_latched.light_count;
++        memcpy(g_gpu.frame.lights, g_latched.lights, sizeof(WWFX_LIGHT) * g_latched.light_count);
++        g_gpu.frame.world_x = g_latched.world_x;
++        g_gpu.frame.world_y = g_latched.world_y;
++    }
++    stage_unlock();
++    return g_gpu.frame_valid;
++}
++
++/* ---- passes */
++
++static void set_target(int rt)
++{
++    IDirect3DSurface9* surface = NULL;
++    IDirect3DTexture9_GetSurfaceLevel(g_gpu.rt[rt], 0, &surface);
++    IDirect3DDevice9_SetRenderTarget(g_gpu.device, 0, surface);
++    IDirect3DSurface9_Release(surface);
++    D3DVIEWPORT9 vp = { 0, 0, g_gpu.rt_width[rt], g_gpu.rt_height[rt], 0.0f, 1.0f };
++    IDirect3DDevice9_SetViewport(g_gpu.device, &vp);
++    float offset[4] = { -1.0f / g_gpu.rt_width[rt], 1.0f / g_gpu.rt_height[rt], 0, 0 };
++    IDirect3DDevice9_SetVertexShaderConstantF(g_gpu.device, 0, offset, 1);
++}
++
++static void set_sampler(int stage, IDirect3DBaseTexture9* tex, BOOL linear)
++{
++    IDirect3DDevice9_SetTexture(g_gpu.device, stage, tex);
++    D3DTEXTUREFILTERTYPE f = linear ? D3DTEXF_LINEAR : D3DTEXF_POINT;
++    IDirect3DDevice9_SetSamplerState(g_gpu.device, stage, D3DSAMP_MINFILTER, f);
++    IDirect3DDevice9_SetSamplerState(g_gpu.device, stage, D3DSAMP_MAGFILTER, f);
++    IDirect3DDevice9_SetSamplerState(g_gpu.device, stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
++    IDirect3DDevice9_SetSamplerState(g_gpu.device, stage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
++    IDirect3DDevice9_SetSamplerState(g_gpu.device, stage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
++}
++
++static void draw_fullscreen(void)
++{
++    FXVERTEX v[4] = {
++        { -1, 1, 0, 1, 0, 0, 0, 0, 0, 0 },
++        { 1, 1, 0, 1, 1, 0, 0, 0, 0, 0 },
++        { -1, -1, 0, 1, 0, 1, 0, 0, 0, 0 },
++        { 1, -1, 0, 1, 1, 1, 0, 0, 0, 0 },
++    };
++    IDirect3DDevice9_DrawPrimitiveUP(g_gpu.device, D3DPT_TRIANGLESTRIP, 2, v, sizeof(FXVERTEX));
++}
++
++static void set_frame_constants(const WWFX_TARGET* target)
++{
++    float frame[4] = {
++        (float)g_gpu.width / target->tex_width, (float)g_gpu.height / target->tex_height,
++        1.0f / g_gpu.width, 1.0f / g_gpu.height };
++    IDirect3DDevice9_SetPixelShaderConstantF(g_gpu.device, 0, frame, 1);
++}
++
++static void blur(int src, int tmp, int dst, float radius)
++{
++    IDirect3DDevice9_SetPixelShader(g_gpu.device, g_gpu.ps[PS_BLUR]);
++    int passes[2][3] = { { src, tmp, 0 }, { tmp, dst, 1 } };
++    for (int i = 0; i < 2; i++)
++    {
++        int from = passes[i][0], to = passes[i][1], vertical = passes[i][2];
++        set_target(to);
++        set_sampler(0, (IDirect3DBaseTexture9*)g_gpu.rt[from], TRUE);
++        float c[4] = {
++            vertical ? 0.0f : 1.0f / g_gpu.rt_width[from], vertical ? 1.0f / g_gpu.rt_height[from] : 0.0f,
++            radius, 0 };
++        IDirect3DDevice9_SetPixelShaderConstantF(g_gpu.device, 1, c, 1);
++        draw_fullscreen();
++    }
++}
++
++static float flicker(const WWFX_LIGHT* l, float t)
++{
++    float n = sinf(t * 11.0f + l->seed * 7.1f) * 0.5f + sinf(t * 23.0f + l->seed * 3.3f) * 0.3f +
++              sinf(t * 5.0f + l->seed) * 0.2f;
++    return 1.0f + l->flicker * 0.18f * n;
++}
++
++static void draw_lights(float t)
++{
++    int n = g_gpu.frame.light_count;
++    if (n <= 0)
++        return;
++    FXVERTEX* v = malloc(sizeof(FXVERTEX) * 6 * n);
++    if (!v)
++        return;
++    for (int i = 0; i < n; i++)
++    {
++        const WWFX_LIGHT* l = &g_gpu.frame.lights[i];
++        float k = flicker(l, t);
++        float x0 = (l->x - l->radius) / g_gpu.width * 2 - 1, x1 = (l->x + l->radius) / g_gpu.width * 2 - 1;
++        float y0 = 1 - (l->y - l->radius) / g_gpu.height * 2, y1 = 1 - (l->y + l->radius) / g_gpu.height * 2;
++        FXVERTEX quad[4] = {
++            { x0, y0, 0, 1, -1, -1, l->r * k, l->g * k, l->b * k, 1 },
++            { x1, y0, 0, 1, 1, -1, l->r * k, l->g * k, l->b * k, 1 },
++            { x0, y1, 0, 1, -1, 1, l->r * k, l->g * k, l->b * k, 1 },
++            { x1, y1, 0, 1, 1, 1, l->r * k, l->g * k, l->b * k, 1 },
++        };
++        FXVERTEX* o = v + i * 6;
++        o[0] = quad[0]; o[1] = quad[1]; o[2] = quad[2];
++        o[3] = quad[2]; o[4] = quad[1]; o[5] = quad[3];
++    }
++    IDirect3DDevice9_SetPixelShader(g_gpu.device, g_gpu.ps[PS_LIGHT]);
++    IDirect3DDevice9_SetRenderState(g_gpu.device, D3DRS_ALPHABLENDENABLE, TRUE);
++    IDirect3DDevice9_SetRenderState(g_gpu.device, D3DRS_SRCBLEND, D3DBLEND_ONE);
++    IDirect3DDevice9_SetRenderState(g_gpu.device, D3DRS_DESTBLEND, D3DBLEND_ONE);
++    IDirect3DDevice9_DrawPrimitiveUP(g_gpu.device, D3DPT_TRIANGLELIST, 2 * n, v, sizeof(FXVERTEX));
++    IDirect3DDevice9_SetRenderState(g_gpu.device, D3DRS_ALPHABLENDENABLE, FALSE);
++    free(v);
++}
++
++BOOL wwfx_gpu_render(const WWFX_TARGET* target)
++{
++    if (!g_gpu.device || !g_gpu.rt[0] || !apply_setup() || !g_gpu.frame_valid)
++        return FALSE;
++
++    IDirect3DDevice9* d = g_gpu.device;
++    const WWFX_PARAMS* p = &g_setup.params;
++    IDirect3DSurface9* back = NULL;
++    IDirect3DDevice9_GetRenderTarget(d, 0, &back);
++
++    IDirect3DDevice9_SetVertexDeclaration(d, g_gpu.decl);
++    IDirect3DDevice9_SetVertexShader(d, g_gpu.vs);
++    IDirect3DDevice9_SetRenderState(d, D3DRS_ALPHABLENDENABLE, FALSE);
++    IDirect3DDevice9_SetRenderState(d, D3DRS_CULLMODE, D3DCULL_NONE);
++    IDirect3DDevice9_SetRenderState(d, D3DRS_ZENABLE, FALSE);
++    set_frame_constants(target);
++
++    /* shadow and occlusion */
++    set_target(RT_PREP);
++    IDirect3DDevice9_SetPixelShader(d, g_gpu.ps[PS_PREP]);
++    set_sampler(2, (IDirect3DBaseTexture9*)g_gpu.mask_tex, FALSE);
++    set_sampler(3, (IDirect3DBaseTexture9*)g_gpu.shadow_tex, FALSE);
++    set_sampler(5, (IDirect3DBaseTexture9*)g_gpu.fog_tex, FALSE);
++    set_sampler(0, (IDirect3DBaseTexture9*)target->index_tex, FALSE);
++    set_sampler(1, (IDirect3DBaseTexture9*)target->palette_tex, FALSE);
++    draw_fullscreen();
++    blur(RT_PREP, RT_HALF_TMP, RT_SHADOW, max(p->shadow_softness, 0.5f) * 0.5f);
++    blur(RT_SHADOW, RT_HALF_TMP, RT_OCCLUSION, max(p->ao_radius, 0.5f) * 0.5f);
++
++    /* light: emissive colours blurred wide, plus point lights */
++    set_target(RT_LIGHT);
++    set_frame_constants(target);
++    IDirect3DDevice9_SetPixelShader(d, g_gpu.ps[PS_EMISSIVE]);
++    set_sampler(0, (IDirect3DBaseTexture9*)target->index_tex, FALSE);
++    set_sampler(1, (IDirect3DBaseTexture9*)target->palette_tex, FALSE);
++    set_sampler(2, (IDirect3DBaseTexture9*)g_gpu.mask_tex, FALSE);
++    set_sampler(4, (IDirect3DBaseTexture9*)g_gpu.emissive_tex, FALSE);
++    draw_fullscreen();
++    blur(RT_LIGHT, RT_LIGHT_TMP, RT_LIGHT, max(p->emissive_glow, 1.0f) * 0.25f);
++    set_target(RT_LIGHT);
++    draw_lights(target->time);
++
++    /* composite */
++    IDirect3DDevice9_SetRenderTarget(d, 0, back);
++    IDirect3DDevice9_SetViewport(d, &target->viewport);
++    float offset[4] = { -1.0f / target->viewport.Width, 1.0f / target->viewport.Height, 0, 0 };
++    IDirect3DDevice9_SetVertexShaderConstantF(d, 0, offset, 1);
++    IDirect3DDevice9_SetPixelShader(d, g_gpu.ps[PS_FINAL]);
++    set_frame_constants(target);
++    float lighting[4] = { p->shadow_opacity, p->ao_strength, p->ambient, p->light_intensity };
++    float grade[4] = { p->contrast, p->saturation, p->vignette, p->sharpen };
++    float extra[4] = { p->bloom, 592.0f / 720.0f, p->fog_opacity, fmodf(target->time, 3600.0f) };
++    float world[4] = { g_gpu.frame.world_x, g_gpu.frame.world_y, (float)g_gpu.width, (float)g_gpu.height };
++    float water[4] = { p->water_waves, p->water_glints, p->water_foam, 0 };
++    float tint[4] = { p->shadow_tint[0], p->shadow_tint[1], p->shadow_tint[2], 1 };
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 2, lighting, 1);
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 3, grade, 1);
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 4, extra, 1);
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 5, tint, 1);
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 6, world, 1);
++    IDirect3DDevice9_SetPixelShaderConstantF(d, 7, water, 1);
++    set_sampler(0, (IDirect3DBaseTexture9*)target->index_tex, FALSE);
++    set_sampler(1, (IDirect3DBaseTexture9*)target->palette_tex, FALSE);
++    set_sampler(2, (IDirect3DBaseTexture9*)g_gpu.mask_tex, FALSE);
++    set_sampler(3, (IDirect3DBaseTexture9*)g_gpu.rt[RT_SHADOW], TRUE);
++    set_sampler(4, (IDirect3DBaseTexture9*)g_gpu.rt[RT_OCCLUSION], TRUE);
++    set_sampler(5, (IDirect3DBaseTexture9*)g_gpu.rt[RT_LIGHT], TRUE);
++    set_sampler(6, (IDirect3DBaseTexture9*)g_gpu.emissive_tex, FALSE);
++    draw_fullscreen();
++
++    for (int i = 2; i < 7; i++)
++        IDirect3DDevice9_SetTexture(d, i, NULL);
++    IDirect3DDevice9_SetVertexShader(d, NULL);
++    IDirect3DDevice9_SetPixelShader(d, NULL);
++    IDirect3DSurface9_Release(back);
++    return TRUE;
++}
++
++/* ---- screenshots of the presented frame (developer channel) */
++
++BOOL wwfx_request_screenshot(const char* png_path)
++{
++    if (!png_path || !*png_path)
++        return FALSE;
++    strncpy_s(g_screenshot_path, sizeof(g_screenshot_path), png_path, _TRUNCATE);
++    InterlockedExchange(&g_screenshot_pending, 1);
++    return TRUE;
++}
++
++void wwfx_gpu_capture(IDirect3DSurface9* back_buffer)
++{
++    if (!InterlockedExchange(&g_screenshot_pending, 0) || !back_buffer)
++        return;
++    D3DSURFACE_DESC desc;
++    IDirect3DSurface9_GetDesc(back_buffer, &desc);
++    IDirect3DSurface9* sys = NULL;
++    if (FAILED(IDirect3DDevice9_CreateOffscreenPlainSurface(g_gpu.device, desc.Width, desc.Height, desc.Format,
++            D3DPOOL_SYSTEMMEM, &sys, NULL)))
++        return;
++    D3DLOCKED_RECT lr;
++    if (SUCCEEDED(IDirect3DDevice9_GetRenderTargetData(g_gpu.device, back_buffer, sys)) &&
++        SUCCEEDED(IDirect3DSurface9_LockRect(sys, &lr, NULL, D3DLOCK_READONLY)))
++    {
++        unsigned char* rgb = malloc((size_t)desc.Width * desc.Height * 3);
++        if (rgb)
++        {
++            for (UINT y = 0; y < desc.Height; y++)
++            {
++                const unsigned char* s = (const unsigned char*)lr.pBits + (size_t)y * lr.Pitch;
++                unsigned char* o = rgb + (size_t)y * desc.Width * 3;
++                for (UINT x = 0; x < desc.Width; x++)
++                {
++                    o[x * 3 + 0] = s[x * 4 + 2];
++                    o[x * 3 + 1] = s[x * 4 + 1];
++                    o[x * 3 + 2] = s[x * 4 + 0];
++                }
++            }
++            unsigned err = lodepng_encode24_file(g_screenshot_path, rgb, desc.Width, desc.Height);
++            wwfx_log("wwfx: screenshot %s (%ux%u) %s", g_screenshot_path, desc.Width, desc.Height,
++                err ? lodepng_error_text(err) : "ok");
++            free(rgb);
++        }
++        IDirect3DSurface9_UnlockRect(sys);
++    }
++    IDirect3DSurface9_Release(sys);
++}
++
++/* ---- exports */
++
++BOOL WINAPI WWFX_Setup(const WWFX_SETUP* setup)
++{
++    return wwfx_setup(setup);
++}
++
++BOOL WINAPI WWFX_Submit(const WWFX_FRAME* frame)
++{
++    return wwfx_submit(frame);
++}
++
++BOOL WINAPI WWFX_Available(void)
++{
++    return wwfx_gpu_ready();
++}
++
++BOOL WINAPI WWFX_Screenshot(const char* png_path)
++{
++    return wwfx_request_screenshot(png_path);
++}
