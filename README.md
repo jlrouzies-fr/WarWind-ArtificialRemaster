@@ -47,7 +47,7 @@ The original game runs underneath, untouched.
 | | |
 |---|---|
 | **Widescreen missions** | 1280x720, scaled to 4K. The map fills the width, over a new bottom HUD in your race's colours. |
-| **New HUD** | Unit faces with health bars, control group plates, and a 5x3 command grid with hotkeys. |
+| **New HUD** | Unit faces with health bars, control group plates, an influence gauge, and a 5x3 command grid with hotkeys. |
 | **Smooth everything** | 60 fps camera and unit motion, and pixel-precise scrolling with the mouse wheel, middle-drag and screen edges. |
 | **Modern controls** | Right click orders, left click selects, Ctrl+digit control groups, double-click selects a unit type, grid hotkeys (QWERT…). |
 | **Widescreen menus** | Main menu, race options, briefing, victory/defeat and the ESC menu, redrawn for 16:9 from the game's own art. |

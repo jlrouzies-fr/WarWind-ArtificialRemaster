@@ -18,7 +18,9 @@ mod is put together, every setting, the installer switches, and how to build it.
   Shift-click to remove it from the selection), the control groups 1..0 as plates with their
   member counts (click a plate to recall the group), and an info well with the hover and status
   text, word-wrapped. With no message to show, the info well summarises the selection by unit
-  type (for example "3 Executioner, 2 Rogue").
+  type (for example "3 Executioner, 2 Rogue"). A gold gauge under the leader's name shows your
+  influence (0 to 5000; the original showed it as the flag beside the leader portrait); hover
+  it for the exact value.
 - **Command grid (`[UI] CommandGrid`).** The HUD shows the selection's commands as a 5x3 grid
   with the game's own command icons, each labelled with its grid hotkey. Click a slot or press
   its key; the grid replaces the command popup over the unit.
@@ -87,7 +89,8 @@ mod is put together, every setting, the installer switches, and how to build it.
 - **Modern RTS clicks (`ModernClicks`).** Right click moves and attacks with the selection.
   Right click on one of your own units moves the selection to it, as a click on the ground
   there would; with nothing to order, it keeps the original behaviour (the unit is selected
-  with its command menu). Left click only selects, and left click on empty ground deselects. On the minimap, left click or drag moves
+  with its command menu). Right click on a vehicle (truck, barge, ferry) boards it, paying the
+  ferry's fare where the game asks for one. Left click only selects, and left click on empty ground deselects. On the minimap, left click or drag moves
   the camera and right click sends the selection there.
 - **Grid hotkeys.** Command buttons answer to the key at their on-screen slot
   (`Q W E R T` / `A S D F G` / `Z X C V B`, configurable) instead of each command's letter.

@@ -84,6 +84,15 @@ namespace game
     constexpr DWORD kScenarioGoalBase = 0x8000049C;     // RES.000 goal: + 20 * race + 2 * mission
     inline const char* const leaderName = (const char*)0x5440F8;
     inline const char* const clanName   = (const char*)0x54410D;
+    // Clan records (clans 1..8) at 0x5440F8 + (clan - 1) * 0x101: +0 leader name, +0x2C resources,
+    // +0x34 influence (0..kMaxInfluence, shown in the original by the flag beside the portrait).
+    constexpr DWORD kClanRecords = 0x5440F8, kClanRecordSize = 0x101;
+    constexpr DWORD kMaxInfluence = 5000;
+    inline DWORD ClanInfluence(int clan)
+    {
+        return *(const DWORD*)(kClanRecords + (clan - 1) * kClanRecordSize + 0x34);
+    }
+    constexpr DWORD kInfluenceText = 0x80000000 + 0x154;   // RES.000 "Influence"
     constexpr DWORD fnSetVideoMode = 0x414214;  // (eax = width, edx = height, ebx = bpp)
     constexpr DWORD fnSetClipRect  = 0x414A54;  // (eax = top, edx = bottom, ebx = left, ecx = right, [stack] RECT* old), ret 4
     constexpr DWORD fnDrawImage    = 0x413A7C;  // (eax = res id, edx = frame, ebx = x, ecx = y, [stack] flags), ret 4

@@ -45,6 +45,11 @@ const Piece kUnitCard = { 238, 10, 106, 116, 8, 278, false };
 const Piece kBioDiagram = { 356, 40, 106, 58, 8, 395, false };
 const Piece* const kPieces[] = { &kMinimap, &kLeaderName, &kResources, &kOrbs, &kUnitCard };
 
+// Influence gauge between the leader name and the resources: the original's rising flag as a bar,
+// with the exact value in the status line while hovered.
+const int kGaugeX = kLeaderName.x, kGaugeY = 41, kGaugeW = kLeaderName.w, kGaugeH = 3;
+bool g_hoverGauge;
+
 // Command grid: 5 x 3 slots in hotkey order (GridKeys), right-aligned.
 constexpr int kCols = 5, kRows = 3, kSlot = 32, kSlotGap = 6;
 constexpr int kGridW = kCols * kSlot + (kCols - 1) * kSlotGap, kGridH = kRows * kSlot + (kRows - 1) * kSlotGap;
@@ -262,6 +267,36 @@ void UpdateBlocks()
         AddBlock(kBioDiagram);
 }
 
+DWORD PlayerInfluence()
+{
+    return min(game::ClanInfluence(*game::playerClan), game::kMaxInfluence);
+}
+
+void PaintInfluenceGauge(const Pixels& p, int top)
+{
+    HudArtWell(p, kGaugeX, top + kGaugeY, kGaugeW, kGaugeH);
+    PALETTEENTRY pal[256];
+    if (!PaletteRead(pal))
+        return;
+    int fill = (int)(PlayerInfluence() * kGaugeW / game::kMaxInfluence);
+    HudArtFill(p, kGaugeX, top + kGaugeY, fill, kGaugeH, PaletteNearest(pal, 232, 184, 48));
+}
+
+bool InGauge(int x, int y)
+{
+    y -= kHudTop;
+    return x >= kGaugeX - 2 && x < kGaugeX + kGaugeW + 2 && y >= kGaugeY - 3 && y < kGaugeY + kGaugeH + 3;
+}
+
+void ShowInfluence()
+{
+    static char label[96];
+    char name[48];
+    CopyPlain(GameText(game::kInfluenceText), name, sizeof(name));
+    _snprintf_s(label, sizeof(label), _TRUNCATE, "%s: %lu / %lu", name, PlayerInfluence(), game::kMaxInfluence);
+    WatcomCall(game::fnSetStatusText, (DWORD)label, 0xFFFF);
+}
+
 // Background, plates and slot wells, painted straight into the locked canvas.
 void PaintPanels(const Pixels& p)
 {
@@ -271,6 +306,7 @@ void PaintPanels(const Pixels& p)
         if (piece->well)
             HudArtWell(p, piece->x, top + piece->y, piece->w, piece->h);
     HudArtWell(p, kInfoX, top + kInfoY, kInfoW, kInfoH);
+    PaintInfluenceGauge(p, top);
     HudSelectionPaint(p, top);
     if (g_enabled)
         for (int slot = 0; slot < kSlots; ++slot)
@@ -464,6 +500,8 @@ void HudDraw()
                 ShowLabel(commands, g_hoverSlot);
         }
     }
+    if (g_hoverGauge)
+        ShowInfluence();
     DrawInfoText();
     HudSelectionDraw(kHudY);
 
@@ -473,6 +511,8 @@ void HudDraw()
 
 bool HudOnMouse(UINT msg, int x, int y)
 {
+    if (msg == WM_MOUSEMOVE)
+        g_hoverGauge = InGauge(x, y);
     if (!g_enabled)
         return false;
     int slot;

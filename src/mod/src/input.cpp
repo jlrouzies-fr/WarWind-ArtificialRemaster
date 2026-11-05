@@ -118,23 +118,40 @@ bool ModernClickApplies()
     return g_modernClicks && *game::altPanelOpen == 0 && InMapView(*game::mouseX, *game::mouseY);
 }
 
-// FindThingAtScreenPos (eax = x, edx = y, ebx = clan whose things are skipped). While an order is
-// synthesised from a right click, the player's own things are skipped, so the order path takes a
-// click on a friendly unit as a click on the ground under it.
+// FindThingAtScreenPos (eax = x, edx = y, ebx = clan filter). While an order is synthesised from a
+// right click, the click handler's own lookup (the call returning to kClickLookupReturn) sees the
+// player's units as ground, so a click on a friendly unit moves there instead of selecting it.
+// Vehicles stay visible, and the order code's later lookups (IssueDefaultOrder: attack target,
+// then the vehicle to board) keep the filters the game passes.
 const BYTE kFindThingOrig[] = { 0x51, 0x56, 0x57, 0x83, 0xEC, 0x04 };   // push ecx/esi/edi ; sub esp, 4
+#define kClickLookupReturn 0x41E27D   // InGameLButtonDown: xor ebx, ebx ; call FindThingAtScreenPos
 void* t_FindThing;
-DWORD g_skipClan;
+bool g_ordering;
+
+DWORD __cdecl OwnUnitAsGround(DWORD id)
+{
+    const game::Thing& t = game::things[id & 0xFFFF];
+    if (id && t.owner == *game::playerClan && (t.category == 2 || t.category == 8))
+        return 0;
+    return id;
+}
 
 __declspec(naked) void FindThingThunk()
 {
     __asm
     {
-        cmp dword ptr [g_skipClan], 0
+        cmp byte ptr [g_ordering], 0
         je original
-        push ebx
-        mov ebx, dword ptr [g_skipClan]
+        cmp dword ptr [esp], kClickLookupReturn
+        jne original
         call dword ptr [t_FindThing]
-        pop ebx
+        push ecx
+        push edx
+        push eax
+        call OwnUnitAsGround
+        add esp, 4
+        pop edx
+        pop ecx
         ret
     original:
         jmp dword ptr [t_FindThing]
@@ -145,9 +162,9 @@ __declspec(naked) void FindThingThunk()
 LRESULT OrderAt(HWND hwnd, WPARAM wParam, LPARAM lParam)
 {
     *game::dragAnchorX = *game::dragAnchorY = -1;
-    g_skipClan = *game::playerClan;
+    g_ordering = true;
     LRESULT r = g_original(hwnd, WM_LBUTTONUP, wParam, lParam);
-    g_skipClan = 0;
+    g_ordering = false;
     return r;
 }
 
